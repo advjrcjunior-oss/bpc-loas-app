@@ -1980,6 +1980,12 @@ def legalmail_criar_rascunho(pasta, tribunal, sistema, comarca, assunto=None,
     }
 
 
+@app.route("/api/debug/key", methods=["GET"])
+def debug_key():
+    key = LEGALMAIL_API_KEY
+    return jsonify({"key_length": len(key), "key_preview": key[:8] + "..." + key[-4:] if key else "VAZIO"})
+
+
 @app.route("/api/legalmail/tribunais", methods=["GET"])
 def legalmail_tribunais():
     """List all available tribunals and their systems."""
