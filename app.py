@@ -3146,14 +3146,17 @@ Dados do processo:
 
 Escreva uma mensagem curta, clara e em linguagem simples (sem juridiquês) para o cliente. Use o primeiro nome dele. Explique o que está acontecendo no processo e o que ele precisa saber. Se houver prazo, mencione. Não inclua saudações formais, apenas a mensagem direta. Não inclua títulos, cabeçalhos ou marcações como "# Mensagem para WhatsApp" ou similares. Nunca mencione valores financeiros do processo."""
 
-    client_ai = anthropic.Anthropic()
-    response = client_ai.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=600,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    mensagem = response.content[0].text.strip()
-    return jsonify({"mensagem": mensagem})
+    try:
+        client_ai = anthropic.Anthropic()
+        response = client_ai.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=600,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        mensagem = response.content[0].text.strip()
+        return jsonify({"mensagem": mensagem})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/monitoramento")
