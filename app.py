@@ -3147,7 +3147,10 @@ Dados do processo:
 Escreva uma mensagem curta, clara e em linguagem simples (sem juridiquês) para o cliente. Use o primeiro nome dele. Explique o que está acontecendo no processo e o que ele precisa saber. Se houver prazo, mencione. Não inclua saudações formais, apenas a mensagem direta. Não inclua títulos, cabeçalhos ou marcações como "# Mensagem para WhatsApp" ou similares. Nunca mencione valores financeiros do processo."""
 
     try:
-        client_ai = anthropic.Anthropic()
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return jsonify({"error": "ANTHROPIC_API_KEY não configurada"}), 500
+        client_ai = anthropic.Anthropic(api_key=api_key, timeout=60.0)
         response = client_ai.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=600,
@@ -3156,7 +3159,27 @@ Escreva uma mensagem curta, clara e em linguagem simples (sem juridiquês) para 
         mensagem = response.content[0].text.strip()
         return jsonify({"mensagem": mensagem})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"{type(e).__name__}: {str(e)}"}), 500
+
+
+@app.route("/api/health")
+def health_check():
+    """Test API connectivity."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    result = {"api_key_set": bool(api_key), "api_key_prefix": api_key[:12] + "..." if api_key else "empty"}
+    try:
+        client_ai = anthropic.Anthropic(api_key=api_key, timeout=30.0)
+        response = client_ai.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=5,
+            messages=[{"role": "user", "content": "oi"}]
+        )
+        result["api_status"] = "ok"
+        result["response"] = response.content[0].text[:50]
+    except Exception as e:
+        result["api_status"] = "error"
+        result["error"] = f"{type(e).__name__}: {str(e)}"
+    return jsonify(result)
 
 
 @app.route("/monitoramento")
