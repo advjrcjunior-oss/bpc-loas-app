@@ -3156,24 +3156,28 @@ def monitoramento_page():
     return render_template("monitoramento.html")
 
 
+# Inicialização — roda tanto com gunicorn quanto python app.py
+def _startup():
+    if LEGALMAIL_API_KEY:
+        # Se não há cache ainda, popula em background antes de iniciar o monitor
+        if not os.path.exists(PROCESSES_CACHE_FILE):
+            def _pre_cache():
+                print("[STARTUP] Cache vazio, buscando processos...")
+                procs = monitor_fetch_all_processes()
+                if procs:
+                    _save_json_file(PROCESSES_CACHE_FILE, procs)
+                    print(f"[STARTUP] Cache populado com {len(procs)} processos")
+            threading.Thread(target=_pre_cache, daemon=True).start()
+        start_monitor()
+        print(f"Monitor automático ativado (verifica a cada {MONITOR_INTERVAL_MINUTES} min)")
+    else:
+        print("AVISO: LEGALMAIL_API_KEY não configurada - monitor desativado")
+
+_startup()
+
 if __name__ == "__main__":
     print(f"Diretório da aplicação: {BASE_DIR}")
     print(f"Timbrado: {TIMBRADO_PATH}")
     print(f"Output: {OUTPUT_DIR}")
-
-    if not os.path.exists(TIMBRADO_PATH):
-        print("AVISO: timbrado.docx não encontrado! Copie o arquivo para o diretório da aplicação.")
-
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("AVISO: ANTHROPIC_API_KEY não configurada! Use: set ANTHROPIC_API_KEY=sua-chave")
-
-    # Start background monitor automatically
-    if LEGALMAIL_API_KEY:
-        start_monitor()
-        print(f"Monitor automático ativado (verifica a cada {MONITOR_INTERVAL_MINUTES} min)")
-        print("  Acesse http://localhost:5000/monitoramento para ver notificações")
-    else:
-        print("AVISO: LEGALMAIL_API_KEY não configurada - monitor desativado")
-
     print("\nIniciando servidor em http://localhost:5000")
     app.run(debug=True, port=5000)
