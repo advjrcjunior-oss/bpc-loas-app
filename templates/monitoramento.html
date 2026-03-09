@@ -796,9 +796,13 @@ async function gerarMensagem() {
                 instrucao: document.getElementById('msgInstrucao').value.trim()
             })
         });
-        document.getElementById('msgTexto').value = result.mensagem || '';
-        document.getElementById('msgResultado').style.display = 'block';
-        document.getElementById('msgCopiado').style.display = 'none';
+        if (result.error) {
+            alert('Erro ao gerar mensagem: ' + result.error);
+        } else {
+            document.getElementById('msgTexto').value = result.mensagem || '';
+            document.getElementById('msgResultado').style.display = 'block';
+            document.getElementById('msgCopiado').style.display = 'none';
+        }
     } catch(e) {
         alert('Erro ao gerar mensagem: ' + e.message);
     } finally {
