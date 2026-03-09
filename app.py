@@ -1,6 +1,6 @@
 import os
 
-# Always load API key from .env file
+# Load .env file (only set vars not already in environment)
 env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 if os.path.exists(env_path):
     with open(env_path) as f:
@@ -8,7 +8,9 @@ if os.path.exists(env_path):
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
-                os.environ[k.strip()] = v.strip()
+                k = k.strip()
+                if k not in os.environ:
+                    os.environ[k] = v.strip()
 
 import re
 import json
