@@ -3179,7 +3179,10 @@ def _startup():
     else:
         print("AVISO: LEGALMAIL_API_KEY não configurada - monitor desativado")
 
-_startup()
+try:
+    _startup()
+except Exception as e:
+    print(f"[STARTUP ERROR] {e}")
 
 if __name__ == "__main__":
     print(f"Diretório da aplicação: {BASE_DIR}")
