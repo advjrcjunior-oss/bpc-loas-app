@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitoramento de Processos - BPC/LOAS</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #1F3763; }
+        .tab { padding: 10px 24px; cursor: pointer; font-weight: 600; color: #666; border: 2px solid transparent; border-bottom: none; border-radius: 8px 8px 0 0; transition: all .2s; }
+        .tab:hover { background: #EBF0F8; }
+        .tab.active { background: #1F3763; color: white; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .process-card { background: white; border-radius: 8px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.1); border-left: 4px solid #4472C4; }
+        .process-card.urgente { border-left-color: #f44336; }
+        .process-card.medio { border-left-color: #ff9800; }
+        .process-card h3 { font-size: .95rem; color: #1F3763; margin-bottom: 6px; }
+        .process-card .meta { font-size: .8rem; color: #888; margin-bottom: 8px; }
+        .process-card .meta span { margin-right: 16px; }
+
+        .notif-card { background: white; border-radius: 8px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+        .notif-card.pending { border-left: 4px solid #ff9800; }
+        .notif-card.analyzed { border-left: 4px solid #4caf50; }
+        .notif-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .notif-header h3 { font-size: .9rem; color: #1F3763; }
+        .notif-badge { padding: 2px 10px; border-radius: 12px; font-size: .75rem; font-weight: 600; }
+        .badge-alta { background: #fdecea; color: #c62828; }
+        .badge-media { background: #fff3e0; color: #e65100; }
+        .badge-baixa { background: #e8f5e9; color: #2e7d32; }
+        .badge-pending { background: #fff3e0; color: #e65100; }
+        .badge-done { background: #e8f5e9; color: #2e7d32; }
+
+        .analysis-box { background: #f5f7fa; border-radius: 6px; padding: 12px; margin-top: 8px; font-size: .85rem; }
+        .analysis-box .field { margin-bottom: 6px; }
+        .analysis-box .label { font-weight: 600; color: #555; }
+        .analysis-box .action { background: #E3F2FD; padding: 8px; border-radius: 4px; margin-top: 8px; font-weight: 600; color: #1565C0; }
+
+        .btn-sm { padding: 6px 14px; font-size: .8rem; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; }
+        .btn-blue { background: #4472C4; color: white; }
+        .btn-blue:hover { background: #365a9e; }
+        .btn-green { background: #2E7D32; color: white; }
+        .btn-green:hover { background: #1b5e20; }
+        .btn-orange { background: #ff9800; color: white; }
+        .btn-orange:hover { background: #e68a00; }
+        .btn-red { background: #f44336; color: white; }
+        .btn-red:hover { background: #d32f2f; }
+        .btn-gray { background: #757575; color: white; }
+        .btn-gray:hover { background: #616161; }
+
+        .import-form { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px; align-items: end; }
+        .import-form .form-group { margin-bottom: 0; }
+
+        .webhook-section { background: #f5f7fa; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+
+        .empty-state { text-align: center; padding: 40px; color: #999; }
+        .empty-state p { margin-top: 8px; }
+
+        .loading-inline { display: inline-block; width: 16px; height: 16px; border: 2px solid #ddd; border-top-color: #1F3763; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; margin-right: 6px; }
+
+        .nav-link { display: inline-block; margin-bottom: 16px; color: #4472C4; text-decoration: none; font-size: .85rem; }
+        .nav-link:hover { text-decoration: underline; }
+
+        .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+        .stat-card { background: white; border-radius: 8px; padding: 16px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+        .stat-card .number { font-size: 1.8rem; font-weight: 700; color: #1F3763; }
+        .stat-card .label { font-size: .8rem; color: #888; margin-top: 4px; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Monitoramento de Processos</h1>
+        <p>Dr. Jose Roberto da Costa Junior - OAB/SP 378.163</p>
+    </header>
+
+    <div class="container">
+        <a href="/" class="nav-link">&larr; Voltar ao Gerador de Peticoes</a>
+
+        <!-- Monitor Control Bar -->
+        <div class="card" style="border-left: 4px solid #4caf50; margin-bottom: 16px; padding: 12px 16px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <div>
+                    <strong style="color:#1F3763;">Monitor Automatico:</strong>
+                    <span id="monitorStatus" style="font-weight:600; margin-left:8px;">Carregando...</span>
+                    <span id="monitorLastCheck" style="font-size:.8rem; color:#888; margin-left:12px;"></span>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <button class="btn-sm btn-green" id="btnStartMonitor" onclick="startMonitor()">Iniciar</button>
+                    <button class="btn-sm btn-red" id="btnStopMonitor" onclick="stopMonitor()" style="display:none;">Parar</button>
+                    <button class="btn-sm btn-blue" onclick="checkNow()">Verificar Agora</button>
+                    <select id="monitorInterval" onchange="updateInterval()" style="padding:5px 8px; border-radius:6px; border:1px solid #ddd; font-size:.8rem;">
+                        <option value="5">5 min</option>
+                        <option value="15">15 min</option>
+                        <option value="30" selected>30 min</option>
+                        <option value="60">1 hora</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="stats-row" id="statsRow">
+            <div class="stat-card"><div class="number" id="statTotal">-</div><div class="label">Processos</div></div>
+            <div class="stat-card"><div class="number" id="statNotif">-</div><div class="label">Notificacoes</div></div>
+            <div class="stat-card"><div class="number" id="statPending">-</div><div class="label">Pendentes</div></div>
+            <div class="stat-card"><div class="number" id="statUrgent">-</div><div class="label">Urgentes</div></div>
+        </div>
+
+        <div class="tabs">
+            <div class="tab active" onclick="showTab('processos')">Processos</div>
+            <div class="tab" onclick="showTab('notificacoes')">Notificacoes</div>
+            <div class="tab" onclick="showTab('mensagem')">Mensagem Cliente</div>
+            <div class="tab" onclick="showTab('importar')">Importar Processo</div>
+            <div class="tab" onclick="showTab('webhook')">Webhook</div>
+        </div>
+
+        <!-- Tab: Processos -->
+        <div id="tab-processos" class="tab-content active">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <h2 style="color:#1F3763; font-size:1.1rem;">Processos Monitorados</h2>
+                <button class="btn-sm btn-blue" onclick="loadProcesses()">Atualizar</button>
+            </div>
+            <div id="processList">
+                <div class="empty-state"><p>Carregando...</p></div>
+            </div>
+            <div style="display:flex; gap:8px; margin-top:12px;">
+                <button class="btn-sm btn-gray" onclick="loadProcesses(Math.max(0, currentOffset-50))">Anterior</button>
+                <button class="btn-sm btn-gray" onclick="loadProcesses(currentOffset+50)">Proximo</button>
+            </div>
+        </div>
+
+        <!-- Tab: Notificacoes -->
+        <div id="tab-notificacoes" class="tab-content">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <h2 style="color:#1F3763; font-size:1.1rem;">Intimacoes e Movimentacoes</h2>
+                <div style="display:flex; gap:8px;">
+                    <button class="btn-sm btn-orange" onclick="analyzeAll()" id="btnAnalyzeAll">Analisar Todos Pendentes</button>
+                    <button class="btn-sm btn-blue" onclick="loadNotifications()">Atualizar</button>
+                </div>
+            </div>
+            <div style="margin-bottom:12px;">
+                <label style="font-size:.85rem; cursor:pointer;">
+                    <input type="checkbox" id="filterPending" onchange="loadNotifications()"> Mostrar apenas pendentes
+                </label>
+            </div>
+            <div id="notifList">
+                <div class="empty-state"><p>Nenhuma notificacao recebida ainda.</p><p style="font-size:.8rem;">Configure o webhook na aba "Webhook" para receber intimacoes automaticamente.</p></div>
+            </div>
+        </div>
+
+        <!-- Tab: Mensagem Cliente -->
+        <div id="tab-mensagem" class="tab-content">
+            <div class="card">
+                <h2>Mensagem para o Cliente</h2>
+                <p style="font-size:.85rem; color:#666; margin-bottom:16px;">
+                    Busque o processo e gere uma mensagem simples de WhatsApp para o cliente.
+                </p>
+
+                <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+                    <div style="flex:2; min-width:200px;">
+                        <label style="font-size:.85rem; font-weight:600; display:block; margin-bottom:4px;">Número do Processo</label>
+                        <input type="text" id="msgNumero" placeholder="0000000-00.2024.1.00.0000" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; font-size:.9rem;">
+                    </div>
+                    <div style="flex:2; min-width:200px;">
+                        <label style="font-size:.85rem; font-weight:600; display:block; margin-bottom:4px;">Nome do Cliente</label>
+                        <input type="text" id="msgNome" placeholder="Ex: João Silva" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; font-size:.9rem;">
+                    </div>
+                    <div style="flex:0; display:flex; align-items:flex-end;">
+                        <button class="btn-sm btn-blue" onclick="buscarProcessoMensagem()" style="padding:8px 20px; font-size:.9rem;">Buscar</button>
+                    </div>
+                </div>
+
+                <div id="msgResultadoBusca" style="display:none;">
+                    <div id="msgProcessoInfo" style="background:#f5f7fa; border-radius:8px; padding:14px; margin-bottom:14px; font-size:.85rem;"></div>
+
+                    <div class="form-group" style="margin-bottom:12px;">
+                        <label style="font-size:.85rem; font-weight:600;">Instrução adicional (opcional)</label>
+                        <input type="text" id="msgInstrucao" placeholder="Ex: mencionar que precisa trazer documentos, avisar sobre audiência..." style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; font-size:.85rem; margin-top:4px;">
+                    </div>
+
+                    <button class="btn-sm btn-green" onclick="gerarMensagem()" id="btnGerarMsg" style="padding:10px 28px; font-size:.9rem;">Gerar Mensagem</button>
+                </div>
+
+                <div id="msgResultado" style="display:none; margin-top:16px;">
+                    <label style="font-size:.85rem; font-weight:600; display:block; margin-bottom:6px;">Mensagem gerada:</label>
+                    <textarea id="msgTexto" rows="8" style="width:100%; padding:12px; border:1px solid #ddd; border-radius:6px; font-size:.9rem; line-height:1.5; resize:vertical;"></textarea>
+                    <div style="display:flex; gap:8px; margin-top:8px;">
+                        <button class="btn-sm btn-blue" onclick="copiarMensagem()">Copiar</button>
+                        <button class="btn-sm btn-orange" onclick="gerarMensagem()">Gerar Novamente</button>
+                    </div>
+                    <div id="msgCopiado" style="display:none; color:#2e7d32; font-size:.8rem; margin-top:4px; font-weight:600;">Copiado!</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab: Importar -->
+        <div id="tab-importar" class="tab-content">
+            <div class="card">
+                <h2>Importar Processo para Monitoramento</h2>
+                <p style="font-size:.85rem; color:#666; margin-bottom:16px;">
+                    Importe processos para que o LegalMail monitore as movimentacoes automaticamente.
+                </p>
+
+                <div class="form-group">
+                    <label>Numero do Processo</label>
+                    <input type="text" id="importNumero" placeholder="0000000-00.2024.1.00.0000">
+                </div>
+
+                <div style="display:flex; gap:8px; margin-bottom:16px;">
+                    <button class="btn-sm btn-blue" onclick="checkSistemas()">Verificar Sistemas</button>
+                    <button class="btn-sm btn-blue" onclick="searchClasses()">Buscar Classes</button>
+                </div>
+
+                <div id="importSistemas" style="display:none;" class="form-group">
+                    <label>Sistema</label>
+                    <select id="importSistema"></select>
+                </div>
+
+                <div id="importClassesDiv" style="display:none;" class="form-group">
+                    <label>Classe</label>
+                    <select id="importClasse"></select>
+                </div>
+
+                <div class="form-group">
+                    <label>Tribunal</label>
+                    <input type="text" id="importTribunal" placeholder="Ex: TRF-3 (preenchido automaticamente)">
+                </div>
+
+                <button class="btn-sm btn-green" onclick="importProcess()" style="padding:10px 32px;">Importar Processo</button>
+                <div id="importResult" style="margin-top:12px;"></div>
+            </div>
+        </div>
+
+        <!-- Tab: Webhook -->
+        <div id="tab-webhook" class="tab-content">
+            <div class="card">
+                <h2>Configurar Webhook</h2>
+                <p style="font-size:.85rem; color:#666; margin-bottom:16px;">
+                    Configure o endpoint para receber notificacoes automaticas do LegalMail quando houver novas intimacoes.
+                </p>
+                <div class="webhook-section">
+                    <p style="font-size:.85rem; margin-bottom:8px;"><strong>Seu endpoint de webhook:</strong></p>
+                    <code id="webhookUrl" style="background:#fff; padding:8px 12px; border-radius:4px; display:block; font-size:.85rem; word-break:break-all;"></code>
+                    <p style="font-size:.75rem; color:#888; margin-top:8px;">
+                        Para receber notificacoes, voce precisa expor este servidor na internet (ex: ngrok, cloudflare tunnel) e registrar a URL abaixo.
+                    </p>
+                </div>
+
+                <div class="form-group">
+                    <label>URL Publica do Webhook</label>
+                    <input type="text" id="webhookEndpoint" placeholder="https://seu-servidor.com/api/legalmail/webhook">
+                </div>
+                <div class="form-group">
+                    <label>Chave de Seguranca (opcional)</label>
+                    <input type="text" id="webhookKey" placeholder="uma-chave-secreta">
+                </div>
+                <button class="btn-sm btn-green" onclick="registerWebhook()">Registrar Webhook no LegalMail</button>
+                <div id="webhookResult" style="margin-top:12px;"></div>
+
+                <hr style="margin:24px 0; border:none; border-top:1px solid #ddd;">
+
+                <h3 style="color:#1F3763; font-size:1rem; margin-bottom:12px;">Teste Manual</h3>
+                <p style="font-size:.85rem; color:#666; margin-bottom:12px;">
+                    Cole o texto de uma intimacao para testar a analise da IA:
+                </p>
+                <div class="form-group">
+                    <label>Numero do Processo</label>
+                    <input type="text" id="testProcesso" placeholder="0000000-00.2024.1.00.0000">
+                </div>
+                <div class="form-group">
+                    <label>Texto da Intimacao</label>
+                    <textarea id="testTexto" rows="6" placeholder="Cole aqui o texto da intimacao/movimentacao..."></textarea>
+                </div>
+                <button class="btn-sm btn-orange" onclick="testAnalysis()">Analisar com IA</button>
+                <div id="testResult" style="margin-top:12px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <a href="/" style="color:#4472C4; text-decoration:none;">Gerador de Peticoes</a> |
+        Monitoramento de Processos - BPC/LOAS App
+    </footer>
+
+<script>
+let currentOffset = 0;
+
+function showTab(name) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    event.target.classList.add('active');
+}
+
+async function api(url, opts) {
+    const resp = await fetch(url, opts);
+    return resp.json();
+}
+
+// === PROCESSOS ===
+async function loadProcesses(offset) {
+    if (offset !== undefined) currentOffset = offset;
+    const el = document.getElementById('processList');
+    el.innerHTML = '<div class="empty-state"><span class="loading-inline"></span> Carregando...</div>';
+    try {
+        const data = await api(`/api/legalmail/processos?offset=${currentOffset}&limit=50`);
+        if (!Array.isArray(data) || data.length === 0) {
+            el.innerHTML = '<div class="empty-state"><p>Nenhum processo encontrado.</p><p style="font-size:.8rem;">Importe processos na aba "Importar Processo".</p></div>';
+            document.getElementById('statTotal').textContent = '0';
+            return;
+        }
+        document.getElementById('statTotal').textContent = data.length + (currentOffset > 0 ? '+' : '');
+        el.innerHTML = data.map(p => `
+            <div class="process-card">
+                <h3>${p.numero_processo || 'Sem numero'}</h3>
+                <div class="meta">
+                    <span><strong>Tribunal:</strong> ${p.tribunal || '-'}</span>
+                    <span><strong>Classe:</strong> ${p.nome_classe || p.abreviatura_classe || '-'}</span>
+                    <span><strong>Juizo:</strong> ${p.juizo || '-'}</span>
+                </div>
+                <div class="meta">
+                    <span><strong>Polo Ativo:</strong> ${p.poloativo_nome || '-'}</span>
+                    <span><strong>Polo Passivo:</strong> ${p.polopassivo_nome || '-'}</span>
+                </div>
+                <div class="meta">
+                    <span><strong>Distribuicao:</strong> ${p.data_distribuicao || '-'}</span>
+                    <span><strong>Valor:</strong> ${p.valor_causa ? 'R$ '+parseFloat(p.valor_causa).toLocaleString('pt-BR',{minimumFractionDigits:2}) : '-'}</span>
+                    <span><strong>Status:</strong> ${p.inbox_atual || '-'}</span>
+                </div>
+                <div style="margin-top:8px;">
+                    <button class="btn-sm btn-blue" onclick="viewDetail(${p.idprocessos})">Ver Detalhes</button>
+                </div>
+            </div>
+        `).join('');
+    } catch(e) {
+        el.innerHTML = `<div class="empty-state" style="color:#c62828;">Erro ao carregar: ${e.message}</div>`;
+    }
+}
+
+// === NOTIFICACOES ===
+async function loadNotifications() {
+    const el = document.getElementById('notifList');
+    const pending = document.getElementById('filterPending').checked;
+    el.innerHTML = '<div class="empty-state"><span class="loading-inline"></span> Carregando...</div>';
+    try {
+        const data = await api(`/api/legalmail/notificacoes?pending=${pending}`);
+        if (!Array.isArray(data) || data.length === 0) {
+            el.innerHTML = '<div class="empty-state"><p>Nenhuma notificacao' + (pending ? ' pendente' : '') + '.</p></div>';
+            updateStats(data);
+            return;
+        }
+        updateStats(data);
+        el.innerHTML = data.map((n, i) => {
+            const isAnalyzed = n.analyzed && n.analysis;
+            const a = n.analysis || {};
+            const urgClass = a.urgencia === 'alta' ? 'badge-alta' : a.urgencia === 'media' ? 'badge-media' : a.urgencia === 'baixa' ? 'badge-baixa' : 'badge-pending';
+
+            let analysisHtml = '';
+            if (isAnalyzed) {
+                analysisHtml = `
+                    <div class="analysis-box">
+                        <div class="field"><span class="label">Resumo:</span> ${a.resumo || '-'}</div>
+                        <div class="field"><span class="label">Tipo:</span> ${a.tipo_movimentacao || '-'}</div>
+                        <div class="field"><span class="label">Prazo:</span> ${a.prazo_dias ? a.prazo_dias + ' dias' : 'Sem prazo'} ${a.data_prazo ? '(ate ' + a.data_prazo + ')' : ''}</div>
+                        <div class="field"><span class="label">Peticao Sugerida:</span> ${a.tipo_peticao_sugerida || '-'}</div>
+                        ${a.observacoes ? `<div class="field"><span class="label">Obs:</span> ${a.observacoes}</div>` : ''}
+                        <div class="action">${a.acao_necessaria || 'Nenhuma acao necessaria'}</div>
+                    </div>`;
+            }
+
+            const needsPetition = isAnalyzed && a.tipo_peticao_sugerida && a.tipo_peticao_sugerida !== 'nenhuma';
+            const petitionBtn = needsPetition ? `<button class="btn-sm btn-green" style="margin-top:8px;" onclick="createPetition('${n.idprocesso || ''}', '${(a.tipo_peticao_sugerida||'').replace(/'/g,"\\'")}', '${(a.acao_necessaria||'').replace(/'/g,"\\'")}')">Criar Peticao: ${a.tipo_peticao_sugerida}</button>` : '';
+
+            return `
+                <div class="notif-card ${isAnalyzed ? 'analyzed' : 'pending'}">
+                    <div class="notif-header">
+                        <h3>${n.numero_processo || 'Processo desconhecido'} - ${n.tribunal || ''}</h3>
+                        <div>
+                            ${isAnalyzed ? `<span class="notif-badge ${urgClass}">${a.urgencia || 'analisado'}</span>` : `<span class="notif-badge badge-pending">pendente</span>`}
+                        </div>
+                    </div>
+                    ${n.titulo_movimentacao ? `<div style="font-size:.85rem; color:#1F3763; font-weight:600; margin-bottom:4px;">${n.titulo_movimentacao}</div>` : ''}
+                    <div class="meta">
+                        <span><strong>Data mov:</strong> ${n.data_movimentacao || '-'}</span>
+                        <span><strong>Recebido:</strong> ${(n.timestamp || '').substring(0,16)}</span>
+                        <span><strong>Polo Ativo:</strong> ${n.polo_ativo || '-'}</span>
+                        <span><strong>Classe:</strong> ${n.classe || '-'}</span>
+                    </div>
+                    ${!isAnalyzed ? `<button class="btn-sm btn-orange" style="margin-top:8px;" onclick="analyzeSingle(${i})">Analisar</button>` : ''}
+                    ${analysisHtml}
+                    ${petitionBtn}
+                </div>`;
+        }).join('');
+    } catch(e) {
+        el.innerHTML = `<div class="empty-state" style="color:#c62828;">Erro: ${e.message}</div>`;
+    }
+}
+
+function updateStats(notifications) {
+    if (!Array.isArray(notifications)) return;
+    const total = notifications.length;
+    const pendingCount = notifications.filter(n => !n.analyzed).length;
+    const urgentCount = notifications.filter(n => n.analysis && n.analysis.urgencia === 'alta').length;
+    document.getElementById('statNotif').textContent = total;
+    document.getElementById('statPending').textContent = pendingCount;
+    document.getElementById('statUrgent').textContent = urgentCount;
+}
+
+async function analyzeSingle(index) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading-inline"></span> Analisando...';
+    try {
+        await api('/api/legalmail/notificacao/analisar', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({index})
+        });
+        loadNotifications();
+    } catch(e) {
+        alert('Erro: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Analisar';
+    }
+}
+
+async function analyzeAll() {
+    const btn = document.getElementById('btnAnalyzeAll');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading-inline"></span> Analisando todos...';
+    try {
+        const result = await api('/api/legalmail/analisar-todos', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: '{}'
+        });
+        alert(`Analise concluida: ${result.analyzed || 0} notificacoes analisadas.`);
+        loadNotifications();
+    } catch(e) {
+        alert('Erro: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Analisar Todos Pendentes';
+    }
+}
+
+// === IMPORTAR ===
+async function checkSistemas() {
+    const numero = document.getElementById('importNumero').value.trim();
+    if (!numero) return alert('Informe o numero do processo');
+    try {
+        const data = await api(`/api/legalmail/importar/sistemas?numero=${encodeURIComponent(numero)}`);
+        if (data.sistemas_permitidos) {
+            const sel = document.getElementById('importSistema');
+            sel.innerHTML = data.sistemas_permitidos.map(s => `<option value="${s.value}">${s.nome}</option>`).join('');
+            document.getElementById('importSistemas').style.display = 'block';
+            if (data.tribunal) document.getElementById('importTribunal').value = data.tribunal;
+        } else {
+            alert('Nenhum sistema encontrado: ' + JSON.stringify(data));
+        }
+    } catch(e) { alert('Erro: ' + e.message); }
+}
+
+async function searchClasses() {
+    try {
+        const data = await api('/api/legalmail/importar/classes?term=procedimento');
+        if (Array.isArray(data) && data.length > 0) {
+            const sel = document.getElementById('importClasse');
+            sel.innerHTML = data.map(c => `<option value="${c.id}">${c.nome} (${c.abreviatura})</option>`).join('');
+            document.getElementById('importClassesDiv').style.display = 'block';
+        } else {
+            alert('Nenhuma classe encontrada');
+        }
+    } catch(e) { alert('Erro: ' + e.message); }
+}
+
+async function importProcess() {
+    const numero = document.getElementById('importNumero').value.trim();
+    const tribunal = document.getElementById('importTribunal').value.trim();
+    const sistema = document.getElementById('importSistema')?.value || '';
+    const classe_id = document.getElementById('importClasse')?.value || '';
+
+    if (!numero || !tribunal || !sistema) return alert('Preencha numero, tribunal e sistema');
+
+    const pedido = { numero, tribunal, sistema };
+    if (classe_id) pedido.classe_id = classe_id;
+
+    const el = document.getElementById('importResult');
+    el.innerHTML = '<span class="loading-inline"></span> Importando...';
+    try {
+        const result = await api('/api/legalmail/importar', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({pedidos: [pedido]})
+        });
+        el.innerHTML = `<div style="background:#e8f5e9; padding:12px; border-radius:6px; font-size:.85rem;"><strong>Importacao solicitada!</strong><pre style="margin-top:8px; white-space:pre-wrap;">${JSON.stringify(result, null, 2)}</pre></div>`;
+    } catch(e) {
+        el.innerHTML = `<div style="background:#fdecea; padding:12px; border-radius:6px; color:#c62828;">Erro: ${e.message}</div>`;
+    }
+}
+
+// === WEBHOOK ===
+function registerWebhook() {
+    const endpoint = document.getElementById('webhookEndpoint').value.trim();
+    const key = document.getElementById('webhookKey').value.trim();
+    if (!endpoint) return alert('Informe a URL do webhook');
+
+    const el = document.getElementById('webhookResult');
+    el.innerHTML = '<span class="loading-inline"></span> Registrando...';
+    api('/api/legalmail/webhook/configurar', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({endpoint, key_endpoint: key})
+    }).then(r => {
+        el.innerHTML = `<div style="background:#e8f5e9; padding:12px; border-radius:6px; font-size:.85rem;"><strong>Webhook registrado!</strong><pre>${JSON.stringify(r, null, 2)}</pre></div>`;
+    }).catch(e => {
+        el.innerHTML = `<div style="background:#fdecea; padding:12px; border-radius:6px; color:#c62828;">Erro: ${e.message}</div>`;
+    });
+}
+
+async function testAnalysis() {
+    const texto = document.getElementById('testTexto').value.trim();
+    const processo = document.getElementById('testProcesso').value.trim();
+    if (!texto) return alert('Cole o texto da intimacao');
+
+    const el = document.getElementById('testResult');
+    el.innerHTML = '<span class="loading-inline"></span> Analisando com IA...';
+    try {
+        const result = await api('/api/legalmail/notificacao/analisar', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({texto, numero_processo: processo})
+        });
+        const a = result.analysis || {};
+        el.innerHTML = `
+            <div class="analysis-box">
+                <div class="field"><span class="label">Resumo:</span> ${a.resumo || '-'}</div>
+                <div class="field"><span class="label">Tipo:</span> ${a.tipo_movimentacao || '-'}</div>
+                <div class="field"><span class="label">Urgencia:</span> <span class="notif-badge ${a.urgencia === 'alta' ? 'badge-alta' : a.urgencia === 'media' ? 'badge-media' : 'badge-baixa'}">${a.urgencia || '-'}</span></div>
+                <div class="field"><span class="label">Prazo:</span> ${a.prazo_dias ? a.prazo_dias + ' dias' : 'Sem prazo'} ${a.data_prazo ? '(ate ' + a.data_prazo + ')' : ''}</div>
+                <div class="field"><span class="label">Peticao Sugerida:</span> ${a.tipo_peticao_sugerida || '-'}</div>
+                ${a.observacoes ? `<div class="field"><span class="label">Obs:</span> ${a.observacoes}</div>` : ''}
+                <div class="action">${a.acao_necessaria || '-'}</div>
+            </div>`;
+    } catch(e) {
+        el.innerHTML = `<div style="background:#fdecea; padding:12px; border-radius:6px; color:#c62828;">Erro: ${e.message}</div>`;
+    }
+}
+
+// === CREATE PETITION FROM ANALYSIS ===
+async function createPetition(idprocesso, tipo, instrucao) {
+    if (!idprocesso) return alert('ID do processo nao encontrado');
+    if (!confirm('Criar peticao intermediaria de ' + tipo + '?')) return;
+
+    const el = document.getElementById('notifList');
+    const msg = document.createElement('div');
+    msg.className = 'card';
+    msg.style.borderLeft = '4px solid #ff9800';
+    msg.innerHTML = '<span class="loading-inline"></span> Criando peticao intermediaria...';
+    el.prepend(msg);
+
+    try {
+        const result = await api('/api/legalmail/peticao-intermediaria', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                idprocesso: parseInt(idprocesso),
+                tipo_peticao: tipo,
+                texto_peticao: instrucao
+            })
+        });
+        if (result.status === 'ok') {
+            msg.style.borderLeftColor = '#4caf50';
+            msg.innerHTML = '<strong style="color:#2e7d32;">Peticao criada!</strong>' +
+                '<div style="font-size:.85rem; margin-top:8px;">' +
+                '<div>ID: ' + result.idpeticoes + '</div>' +
+                '<div><a href="' + result.url + '" target="_blank" style="color:#4472C4;">Abrir no LegalMail</a></div>' +
+                (result.pecas_disponiveis ? '<div style="margin-top:4px;">Pecas disponiveis: ' + result.pecas_disponiveis.map(p => p.nome).join(', ') + '</div>' : '') +
+                '</div>';
+        } else {
+            msg.style.borderLeftColor = '#f44336';
+            msg.innerHTML = '<strong style="color:#c62828;">Erro:</strong> ' + JSON.stringify(result);
+        }
+    } catch(e) {
+        msg.style.borderLeftColor = '#f44336';
+        msg.innerHTML = '<strong style="color:#c62828;">Erro:</strong> ' + e.message;
+    }
+}
+
+// === MONITOR CONTROLS ===
+async function loadMonitorStatus() {
+    try {
+        const data = await api('/api/legalmail/monitor/status');
+        const statusEl = document.getElementById('monitorStatus');
+        const lastEl = document.getElementById('monitorLastCheck');
+        if (data.running) {
+            statusEl.innerHTML = '<span style="color:#2e7d32;">ATIVO</span>';
+            document.getElementById('btnStartMonitor').style.display = 'none';
+            document.getElementById('btnStopMonitor').style.display = '';
+        } else {
+            statusEl.innerHTML = '<span style="color:#c62828;">PARADO</span>';
+            document.getElementById('btnStartMonitor').style.display = '';
+            document.getElementById('btnStopMonitor').style.display = 'none';
+        }
+        if (data.last_check) {
+            const d = new Date(data.last_check);
+            lastEl.textContent = 'Ultima verificacao: ' + d.toLocaleString('pt-BR');
+        }
+        document.getElementById('statTotal').textContent = data.processes_total || '-';
+        document.getElementById('statNotif').textContent = data.notifications_total || '0';
+        document.getElementById('statPending').textContent = data.notifications_pending || '0';
+        document.getElementById('statUrgent').textContent = data.notifications_urgent || '0';
+        // Set interval selector
+        const sel = document.getElementById('monitorInterval');
+        for (let opt of sel.options) {
+            if (parseInt(opt.value) === data.interval_minutes) opt.selected = true;
+        }
+    } catch(e) {
+        document.getElementById('monitorStatus').innerHTML = '<span style="color:#888;">Erro</span>';
+    }
+}
+
+async function startMonitor() {
+    await api('/api/legalmail/monitor/start', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    loadMonitorStatus();
+}
+
+async function stopMonitor() {
+    await api('/api/legalmail/monitor/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    loadMonitorStatus();
+}
+
+async function checkNow() {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading-inline"></span> Verificando...';
+    await api('/api/legalmail/monitor/check-now', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    btn.disabled = false;
+    btn.textContent = 'Verificar Agora';
+    // Refresh after a delay to let check run
+    setTimeout(() => { loadMonitorStatus(); loadNotifications(); }, 5000);
+    alert('Verificacao iniciada em background. Aguarde alguns minutos e clique em Atualizar.');
+}
+
+async function updateInterval() {
+    const val = document.getElementById('monitorInterval').value;
+    await api('/api/legalmail/monitor/config', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({interval_minutes: parseInt(val)})
+    });
+}
+
+// === PROCESS DETAIL WITH MOVEMENTS ===
+async function viewDetail(idprocesso) {
+    const el = document.getElementById('processList');
+    el.innerHTML = `<div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <h2 style="color:#1F3763; font-size:1rem;">Detalhes do Processo</h2>
+            <button class="btn-sm btn-gray" onclick="loadProcesses()">Voltar</button>
+        </div>
+        <div id="processDetail"><span class="loading-inline"></span> Carregando...</div>
+        <h3 style="color:#1F3763; font-size:.95rem; margin-top:16px; margin-bottom:8px;">Movimentacoes</h3>
+        <div id="processAutos"><span class="loading-inline"></span> Carregando movimentacoes...</div>
+    </div>`;
+
+    // Fetch detail and autos in parallel
+    const [detail, autos] = await Promise.all([
+        api('/api/legalmail/processo/detalhe?idprocesso=' + idprocesso),
+        api('/api/legalmail/processo/autos?idprocesso=' + idprocesso).catch(() => [])
+    ]);
+
+    const p = Array.isArray(detail) ? detail[0] : detail;
+    if (p) {
+        document.getElementById('processDetail').innerHTML = `
+            <div style="font-size:.9rem;">
+                <div class="meta"><span><strong>Numero:</strong> ${p.numero_processo || '-'}</span></div>
+                <div class="meta"><span><strong>Tribunal:</strong> ${p.tribunal || '-'}</span> <span><strong>Sistema:</strong> ${p.sistema_tribunal || '-'}</span> <span><strong>Juizo:</strong> ${p.juizo || '-'}</span></div>
+                <div class="meta"><span><strong>Classe:</strong> ${p.nome_classe || '-'}</span> <span><strong>Tema:</strong> ${p.processo_tema || '-'}</span></div>
+                <div class="meta"><span><strong>Polo Ativo:</strong> ${p.poloativo_nome || '-'}</span> <span><strong>Polo Passivo:</strong> ${p.polopassivo_nome || '-'}</span></div>
+                <div class="meta"><span><strong>Valor:</strong> ${p.valor_causa ? 'R$ '+parseFloat(p.valor_causa).toLocaleString('pt-BR',{minimumFractionDigits:2}) : '-'}</span> <span><strong>Prazo:</strong> ${p.data_prazo || 'Sem prazo'}</span> <span><strong>Ultima importacao:</strong> ${p.last_import || '-'}</span></div>
+            </div>`;
+    }
+
+    const autosEl = document.getElementById('processAutos');
+    if (Array.isArray(autos) && autos.length > 0) {
+        autosEl.innerHTML = autos.map(m => `
+            <div style="padding:8px 12px; border-left:3px solid #4472C4; margin-bottom:6px; background:#f9f9f9; border-radius:0 4px 4px 0; font-size:.85rem;">
+                <strong>${m.data_movimentacao || '-'}</strong> - ${m.titulo || 'Sem titulo'}
+                <span style="color:#888; font-size:.75rem; margin-left:8px;">ID: ${m.idmovimentacoes}</span>
+            </div>
+        `).join('');
+    } else if (autos.error) {
+        autosEl.innerHTML = '<div style="color:#888; font-size:.85rem;">Autos nao disponiveis para este processo.</div>';
+    } else {
+        autosEl.innerHTML = '<div style="color:#888; font-size:.85rem;">Nenhuma movimentacao encontrada.</div>';
+    }
+}
+
+// === MENSAGEM CLIENTE ===
+let _processoSelecionado = null;
+let _movimentacoesSelecionadas = [];
+
+async function buscarProcessoMensagem() {
+    const numero = document.getElementById('msgNumero').value.trim();
+    const nome = document.getElementById('msgNome').value.trim();
+    if (!numero && !nome) return alert('Informe o número do processo ou nome do cliente.');
+
+    const params = numero ? `numero=${encodeURIComponent(numero)}` : `nome=${encodeURIComponent(nome)}`;
+    const resultDiv = document.getElementById('msgResultadoBusca');
+    const infoDiv = document.getElementById('msgProcessoInfo');
+    resultDiv.style.display = 'none';
+    document.getElementById('msgResultado').style.display = 'none';
+    infoDiv.innerHTML = '<span class="loading-inline"></span> Buscando...';
+    resultDiv.style.display = 'block';
+
+    try {
+        const data = await api(`/api/legalmail/buscar-processo?${params}`);
+        const processos = data.processos || [];
+        if (!processos.length) {
+            infoDiv.innerHTML = '<span style="color:#c62828;">Nenhum processo encontrado.</span>';
+            return;
+        }
+        if (processos.length > 1) {
+            // Mostra lista para escolher
+            infoDiv.innerHTML = `<strong>Selecione o processo:</strong><br><br>` +
+                processos.map((p, i) => `
+                    <div style="padding:8px; background:white; border-radius:6px; margin-bottom:6px; cursor:pointer; border:2px solid transparent;"
+                         onclick="selecionarProcesso(${i})" id="proc-opt-${i}">
+                        <strong>${p.numero_processo || '-'}</strong> — ${p.poloativo_nome || '-'} — ${p.tribunal || '-'}
+                    </div>`).join('');
+            window._processosEncontrados = processos;
+            document.getElementById('btnGerarMsg').style.display = 'none';
+            return;
+        }
+        await selecionarProcessoObj(processos[0]);
+    } catch(e) {
+        infoDiv.innerHTML = `<span style="color:#c62828;">Erro: ${e.message}</span>`;
+    }
+}
+
+async function selecionarProcesso(i) {
+    const p = window._processosEncontrados[i];
+    document.querySelectorAll('[id^="proc-opt-"]').forEach(el => el.style.border = '2px solid transparent');
+    document.getElementById(`proc-opt-${i}`).style.border = '2px solid #4472C4';
+    selecionarProcessoObj(p);
+}
+
+function selecionarProcessoObj(p) {
+    _processoSelecionado = p;
+    _movimentacoesSelecionadas = Array.isArray(p.movimentacoes) ? p.movimentacoes : [];
+
+    const movsHtml = _movimentacoesSelecionadas.length > 0
+        ? `<div style="grid-column:span 2; margin-top:4px;">
+               <strong>Últimas movimentações:</strong>
+               <div style="margin-top:6px; max-height:120px; overflow-y:auto;">
+                 ${_movimentacoesSelecionadas.slice(0,5).map(m =>
+                   `<div style="padding:4px 0; border-bottom:1px solid #eee; font-size:.8rem;">
+                      <span style="color:#888;">${m.data_movimentacao || '-'}</span> — ${m.titulo || '-'}
+                    </div>`).join('')}
+               </div>
+           </div>`
+        : `<div style="grid-column:span 2; color:#999; font-size:.8rem; margin-top:4px;">Nenhuma movimentação disponível no cache.</div>`;
+
+    document.getElementById('msgProcessoInfo').innerHTML = `
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+            <div><strong>Número:</strong> ${p.numero_processo || '-'}</div>
+            <div><strong>Tribunal:</strong> ${p.tribunal || '-'}</div>
+            <div><strong>Cliente:</strong> ${p.poloativo_nome || '-'}</div>
+            <div><strong>Classe:</strong> ${p.nome_classe || p.abreviatura_classe || '-'}</div>
+            <div><strong>Juízo:</strong> ${p.juizo || '-'}</div>
+            <div><strong>Prazo:</strong> ${p.data_prazo || 'Sem prazo'}</div>
+            ${movsHtml}
+        </div>`;
+    document.getElementById('btnGerarMsg').style.display = '';
+}
+
+async function gerarMensagem() {
+    if (!_processoSelecionado) return alert('Busque um processo primeiro.');
+    const btn = document.getElementById('btnGerarMsg');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading-inline"></span> Gerando...';
+
+    try {
+        const result = await api('/api/legalmail/gerar-mensagem-cliente', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                processo: _processoSelecionado,
+                movimentacoes: _movimentacoesSelecionadas,
+                instrucao: document.getElementById('msgInstrucao').value.trim()
+            })
+        });
+        document.getElementById('msgTexto').value = result.mensagem || '';
+        document.getElementById('msgResultado').style.display = 'block';
+        document.getElementById('msgCopiado').style.display = 'none';
+    } catch(e) {
+        alert('Erro ao gerar mensagem: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Gerar Mensagem';
+    }
+}
+
+function copiarMensagem() {
+    const txt = document.getElementById('msgTexto').value;
+    navigator.clipboard.writeText(txt).then(() => {
+        document.getElementById('msgCopiado').style.display = 'block';
+        setTimeout(() => document.getElementById('msgCopiado').style.display = 'none', 2000);
+    });
+}
+
+// Auto-refresh monitor status every 60s
+setInterval(loadMonitorStatus, 60000);
+
+// Init
+document.getElementById('webhookUrl').textContent = window.location.origin + '/api/legalmail/webhook';
+loadMonitorStatus();
+loadProcesses();
+loadNotifications();
+</script>
+</body>
+</html>

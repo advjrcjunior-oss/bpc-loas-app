@@ -1,0 +1,4049 @@
+openapi: 3.0.0
+info:
+  title: LegalMail Public API
+  version: "1.0.0"
+  description: |
+    API pública destinada à integração com a plataforma LegalMail.
+
+    - Limite de 30 requisições por minuto.
+    - A detecção de polling resultará no **bloqueio do workspace por 7 dias**.
+    - Em caso de reincidência, o bloqueio será **permanente**.
+
+    - A chave de API deve ser enviada como parâmetro `api_key` em **todas** as requisições.
+    - A chave pode ser obtida no menu "Integrações" da plataforma LegalMail.
+
+    Para evitar penalizações e melhorar a integração, considere as seguintes boas práticas:
+    - Utilize estratégias baseadas em webhooks (quando disponíveis) para evitar polling.
+    - Trate os erros HTTP adequadamente, especialmente os relacionados à taxa de requisições (status 429).
+    - Monitore o consumo de requisições para evitar bloqueios inesperados.
+servers:
+  - url: https://app.legalmail.com.br/
+tags:
+  - name: Processes
+    description: Operações relacionadas aos processos
+  - name: Petitions Initial
+    description: Endpoints para petições iniciais
+  - name: Petitions Intermediate
+    description: Endpoints para petições intermediárias
+  - name: Petitions
+    description: Endpoints para petições
+  - name: Workspace
+    description: Gestão de workspaces e notificações
+  - name: Docs Generator
+    description: Operações do gerador de documentos (Google Docs)
+  - name: Attachments
+    description: Consulta de tipos de anexos e tribunais
+  - name: Users
+    description: Operações relacionadas aos usuários do workspace. Senhas devem ser enviadas em formato MD5.
+  - name: Parts
+    description: Gerenciamento das partes processuais
+  - name: Imports
+    description: Solicitações públicas de importação de processos
+  - name: Autos
+    description: Atualização e download de autos de processos
+paths:
+  /api/v1/imports/request:
+    post:
+      tags:
+        - Imports
+      summary: Solicitar importação de processos (avulsa ou em lote)
+      description: |-
+        Passo a passo recomendado para integrações:
+        1. Busque a classe em `/api/v1/imports/classes` e use o `classe_id` retornado.
+        2. Descubra os sistemas compatíveis para o número informado com `/api/v1/imports/allowed-systems` e escolha o `sistema` permitido.
+        3. Envie a requisição abaixo com o `numero`, `tribunal`, `sistema`, `classe_id` e `certificado_id` desejados.
+        Replica o fluxo de solicitações da plataforma, incluindo validação de credenciais, sistemas habilitados e fila.
+        Se o número estiver no padrão CNJ, ele deve corresponder ao tribunal informado, caso contrário o item é recusado.
+        Caso já exista um pedido do mesmo processo e classe com status 0 ou 10 para o workspace, o item é retornado como warning sem duplicar.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pedidos:
+                  type: array
+                  minItems: 1
+                  description: Lista de pedidos a serem importados
+                  items:
+                    type: object
+                    properties:
+                      numero:
+                        type: string
+                        description: Número completo do processo
+                      tribunal:
+                        type: string
+                        description: Tribunal (ex. TJSP)
+                      sistema:
+                        type: string
+                        description: Sistema do tribunal (pje, projudi, esaj, eproc)
+                      classe_id:
+                        type: string
+                        description: Identificador retornado por `/api/v1/imports/classes`
+                      certificado_id:
+                        type: integer
+                        description: Identificador do certificado a ser utilizado
+                    required:
+                      - numero
+                      - tribunal
+                      - sistema
+                      - classe_id
+              example:
+                pedidos:
+                  - numero: "0000000-00.2024.1.00.0000"
+                    tribunal: TJSP
+                    sistema: esaj
+                    classe_id: "143"
+                    certificado_id: 10
+      responses:
+        "200":
+          description: Solicitações registradas
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                status: success
+                tipo_pedido: Lote
+                hash: abc123
+                resultados:
+                  - numero: "0000000-00.2024.1.00.0000"
+                    hash: abc123
+                    status: success
+                    message: Solicitação registrada com sucesso.
+                    reactivated: false
+                    workspace_reimported_count: null
+        "422":
+          description: "Nenhum pedido aceito (ex.: credencial inválida, sistema incompatível ou sistema não habilitado para o certificado)"
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                status: error
+                tipo_pedido: Avulso
+                hash: 5b605730-6c84-4906-8783-bfa92abf2877
+                resultados:
+                  - numero: "0004849-93.2025.8.26.0016"
+                    hash: 5b605730-6c84-4906-8783-bfa92abf2877
+                    status: error
+                    message: Não foi possível solicitar a importação. Sistema não habilitado para o certificado.
+        "400":
+          description: Erro de validação ou credencial ausente
+
+  /api/v1/imports/status:
+    get:
+      tags:
+        - Imports
+      summary: Consultar pedidos de importação
+      description: Informe `hash` para recuperar um lote ou `numero` para buscar pedidos por processo. O campo `motivo_falha` usa `processos_importar.mensagem` e, em falhas sem mensagem, retorna `Não localizado após diversas tentativas`.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: hash
+          required: false
+          description: Hash do lote de importação
+          schema:
+            type: string
+        - in: query
+          name: numero
+          required: false
+          description: Número do processo (busca todos os pedidos do número)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Pedidos encontrados
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                status: success
+                hash: abc123
+                pedidos:
+                  - numero: "5048777-78.2024.4.03.6301"
+                    tribunal: TRF-3
+                    status: Aguardando habilitação
+                    motivo_falha: Certificado digital inválido para o tribunal selecionado.
+                    classe: Recurso Ordinário
+                    fonte_pedido: api
+                    tipo_pedido: Avulso
+                    fk_certificado: "3212"
+                    sistema_tribunal: pje
+                    total_tentativas: 0
+        "400":
+          description: Parâmetros inválidos ou faltantes
+
+  /api/v1/imports/classes:
+    get:
+      tags:
+        - Imports
+      summary: Buscar classes processuais
+      description: Retorna classes pelo termo informado, avaliando nome ou abreviatura.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: term
+          required: false
+          description: Termo de busca (nome ou abreviatura)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Lista de classes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    nome:
+                      type: string
+                    abreviatura:
+                      type: string
+                  required:
+                    - id
+                    - nome
+                    - abreviatura
+              example:
+                - id: 143
+                  nome: Recurso
+                  abreviatura: RC
+
+  /api/v1/imports/allowed-systems:
+    get:
+      tags:
+        - Imports
+      summary: Listar sistemas permitidos pelo número do processo
+      description: Identifica o tribunal pelo número CNJ informado e retorna os sistemas cadastrados para importação pública.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: numero
+          required: true
+          description: Número completo do processo
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Sistemas permitidos encontrados
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                status: success
+                tribunal: TJSP
+                sistemas_permitidos:
+                  - nome: e-SAJ
+                    value: esaj
+                  - nome: e-Proc
+                    value: eproc
+                  - nome: Projudi SEEU
+                    value: projudi_seeu
+        "400":
+          description: Número do processo ausente
+        "422":
+          description: Número inválido ou tribunal não identificado
+        "404":
+          description: Nenhum sistema encontrado para o tribunal
+
+  /api/v1/imports/cancel:
+    post:
+      tags:
+        - Imports
+      summary: Cancelar pedidos pendentes por hash
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+              schema:
+                type: object
+              properties:
+                hash:
+                  type: string
+                  description: Hash do lote de pedidos
+              required:
+                - hash
+              example:
+                hash: abc123
+      responses:
+        "200":
+          description: Quantidade de pedidos cancelados (status 0 ou 10)
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                status: success
+                cancelados: 2
+        "400":
+          description: Hash ausente ou inválido
+
+  /api/v1/process/all:
+    get:
+      tags:
+        - Processes
+      summary: Listar processos por api_key
+      description: Retorna todos os processos vinculados ao workspace informado. Caso os parâmetros offset e limit não sejam enviados, serão utilizados os valores padrão offset=0 e limit=50.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: offset
+          required: false
+          description: Offset para paginação
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: limit
+          required: false
+          description: Limite de resultados (máximo 50)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        "200":
+          description: Lista de processos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+              example:
+                - idprocessos: 12
+                  hash_processo: "abc123"
+                  numero_processo: "0000000-00.2024.8.26.0001"
+                  juizo: "1ª Vara Cível"
+                  valor_causa: "10000.00"
+                  data_distribuicao: "2024-01-10"
+                  tribunal: TJSP
+                  processo_tema: "Tema Exemplo"
+                  sistema_tribunal: PJe
+                  poloativo_nome: "Autor Exemplo"
+                  tema_nome: "Tema Exemplo"
+                  polopassivo_nome: "Réu Exemplo"
+                  abreviatura_classe: PROC
+                  foro: "Foro Central"
+                  nome_classe: "Procedimento Comum Cível"
+                  inbox_atual: "Arquivo"
+        "429":
+          description: Limite de requisições excedido (30 por minuto)
+  /api/v1/workspace/notifications/endpoint:
+    post:
+      tags:
+        - Workspace
+      summary: Cadastrar endpoint para notificacoes
+      description: |
+        Registra o URL para o qual a LegalMail enviará atualizações.
+        Serão retornadas cada nova intimação importada no workspace,
+        após o processo ser atualizado por nossos robôs.
+
+        Ao cadastrar o endpoint, sempre que houver atualização você receberá
+        um payload com o objeto abaixo (exemplo). O campo `params` é uma lista
+        de objetos e cada item contém os dados do processo e as movimentações do dia
+        em `documento` (array de movimentações). Em cada movimentação, o campo `tipo`
+        indica o formato do conteúdo e pode ser `text` ou `pdf`:
+
+        ```json
+        {
+          "clientkey": "SUA_KEY_ENDPOINT",
+          "params": [
+            {
+              "inbox_id": "123456",
+              "inbox_uri": "https://app.legalmail.com.br/inbox/entrada?encryptedId=123456",
+              "tribunal": "TJSP",
+              "sistema_tribunal": "esaj",
+              "instancia": "1",
+              "uf": "SP",
+              "numero_processo": "0000000-00.2024.1.00.0000",
+              "classe_processo": "PROC",
+              "polo_ativo": "Autor Exemplo",
+              "polo_passivo": "Réu Exemplo",
+              "documento": [
+                {
+                  "tipo": "text",
+                  "link": "https://app.legalmail.com.br/documentos/123",
+                  "text": "Texto da movimentação",
+                  "intimation_date": "2024-01-01",
+                  "title": "Título da movimentação",
+                  "id": "123",
+                  "movement_date": "2024-01-01"
+                }
+              ]
+            }
+          ]
+        }
+        ```
+
+        Além das atualizações de movimentações/intimações, quando um protocolo for
+        finalizado, o endpoint cadastrado também poderá receber o evento abaixo:
+
+        ```json
+        {
+          "clientkey": "SUA_KEY_ENDPOINT",
+          "params": [
+            {
+              "event": "protocolo_finalizado",
+              "idpeticoes": 123,
+              "idprocessos": 456,
+              "numero_processo": "0000000-00.2024.8.26.0001",
+              "type": "Inicial",
+              "receipt_link": "https://..."
+            }
+          ]
+        }
+        ```
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: endpoint
+          required: true
+          description: URL do endpoint que receberá as notificações
+          schema:
+            type: string
+        - in: query
+          name: key_endpoint
+          required: false
+          description: Chave de segurança opcional para o endpoint
+          schema:
+            type: string
+        - in: query
+          name: nome_aplicacao
+          required: true
+          description: Nome da aplicação que receberá as notificações
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Endpoint cadastrado com sucesso
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                status: success
+        "400":
+          description: Erro de validação (chave inválida ou parâmetros ausentes)
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                chave_invalida:
+                  summary: Chave de API inválida
+                  value:
+                    status: error
+                    message: Chave de api invalida.
+                parametros_ausentes:
+                  summary: Parâmetros ausentes
+                  value:
+                    status: error
+                    message: Parametros ausentes.
+        "401":
+          description: API key not provided
+
+  /api/v1/professions:
+    get:
+      tags:
+        - Parts
+      summary: Listar profissões
+      description: Retorna todas as profissões aceitas pela API.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Lista de profissões
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+              example:
+                - deProfissao: Advogado
+                  deFeminina: Advogada
+                  cdProfissao: 1
+        "401":
+          description: API key not provided
+
+  /api/v1/issuing-agencies:
+    get:
+      tags:
+        - Parts
+      summary: Listar órgãos expedidores
+      description: Retorna todos os órgãos expedidores aceitos pela API.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Lista de órgãos expedidores
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+              example:
+                - value: SSP
+                  label: SSP - Secretaria de Segurança Pública
+        "401":
+          description: API key not provided
+
+  /api/v1/workspace/certificates:
+    get:
+      tags:
+        - Workspace
+      summary: Listar certificados cadastrados
+      description: Recupera a relação de certificados disponíveis no workspace.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Lista de certificados
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+              example:
+                - idcertificados: 1
+                  advogado_nome: Fulano de Tal
+                  vencimento: "2025-12-31"
+        "401":
+          description: API key not provided
+  /api/v1/process/detail:
+    get:
+      tags:
+        - Processes
+      summary: Obter dados de um processo especifico
+      description: |
+        Informe **apenas um** dos parâmetros `numero_processo` ou `idprocesso`.
+        O `api_key` é obrigatório para identificar o workspace.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: numero_processo
+          required: false
+          description: Número completo do processo
+          schema:
+            type: string
+        - in: query
+          name: idprocesso
+          required: false
+          description: ID interno do processo
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Dados do processo
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    idprocessos:
+                      type: integer
+                      description: Identificador interno do processo
+                    numero_processo:
+                      type: string
+                      description: Número completo do processo
+                    hash_processo:
+                      type: string
+                      description: Hash do processo
+                    foro:
+                      type: string
+                      description: Foro de tramitação
+                    last_import:
+                      type: string
+                      format: date-time
+                      description: Data e hora da última importação de dados
+                    poloativo_nome:
+                      type: string
+                      description: Nome do polo ativo
+                    polopassivo_nome:
+                      type: string
+                      description: Nome do polo passivo
+                    nome_classe:
+                      type: string
+                      description: Nome da classe processual
+                    abreviatura_classe:
+                      type: string
+                      description: Abreviatura da classe processual
+                    inbox_atual:
+                      type: string
+                      description: Status atual do processo
+                    juizo:
+                      type: string
+                      description: Juízo responsável
+                    valor_causa:
+                      type: number
+                      description: Valor da causa
+                    data_distribuicao:
+                      type: string
+                      format: date
+                      description: Data de distribuição do processo (AAAA-MM-DD)
+                    tribunal:
+                      type: string
+                      description: Tribunal em que o processo tramita
+                    processo_tema:
+                      type: string
+                      description: Tema do processo
+                    sistema_tribunal:
+                      type: string
+                      description: Sistema do tribunal
+                    data_prazo:
+                      type: string
+                      format: date
+                      description: Data limite do prazo do processo (AAAA-MM-DD)
+              example:
+                - idprocessos: 12
+                  numero_processo: "0000000-00.2024.8.26.0001"
+                  hash_processo: "abc123"
+                  foro: "Foro Central"
+                  last_import: "2024-07-01 14:23:00"
+                  valor_causa: 10000.0
+                  data_distribuicao: "2024-01-10"
+                  data_prazo: "2024-07-15"
+                  poloativo_nome: "Autor Exemplo"
+                  polopassivo_nome: "Réu Exemplo"
+                  nome_classe: "Procedimento Comum Cível"
+                  abreviatura_classe: "ProceComCiv"
+                  inbox_atual: "Arquivo"
+
+  /api/v1/process/delete:
+    post:
+      tags:
+        - Processes
+      summary: Excluir processo
+      description: |
+        Exclui o processo informado e encerra o monitoramento de intimações.
+        Se o processo for apenas excluído, ele ainda pode ser reimportado caso surja uma nova intimação.
+        Ao informar `block_process` como `true`, o processo também é bloqueado e qualquer futura intimação será ignorada.
+
+        Um mesmo processo pode ser excluído no máximo **3 vezes**. Após atingir esse limite, a API retorna erro.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                idprocessos:
+                  type: integer
+                  description: Identificador interno do processo
+                block_process:
+                  type: boolean
+                  description: Indica se o processo deve ser bloqueado após a exclusão
+              required:
+                - idprocessos
+            example:
+              idprocessos: 123
+              block_process: true
+      responses:
+        "200":
+          description: Resultado da exclusão
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                    nullable: true
+              examples:
+                success:
+                  summary: Processo excluído
+                  value:
+                    status: success
+                error:
+                  summary: Erro na exclusão
+                  value:
+                    status: error
+                    message: Processo não encontrado, tente novamente.
+
+  /api/v1/process/autos:
+    get:
+      tags:
+        - Processes
+      summary: Listar autos do processo
+      description: |
+        Retorna as movimentações classificadas como autos vinculadas a um processo específico do workspace.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idprocesso
+          required: true
+          description: Identificador do processo dentro do workspace
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Lista de autos do processo
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    idmovimentacoes:
+                      type: integer
+                      description: Identificador da movimentação
+                    fk_processo:
+                      type: integer
+                      description: Identificador do processo
+                    titulo:
+                      type: string
+                      description: Título da movimentação
+                    data_movimentacao:
+                      type: string
+                      format: date
+                      description: Data da movimentação
+                    tipo:
+                      type: string
+                      description: Tipo do documento (principal ou anexo)
+                    hash_documento:
+                      type: string
+                      description: Hash do documento armazenado
+              example:
+                - idmovimentacoes: 123
+                  fk_processo: 456
+                  titulo: "Petição inicial"
+                  data_movimentacao: "2024-05-01"
+                  tipo: "principal"
+                  hash_documento: "e3b0c44298fc1c149afbf4c8996fb924"
+        "400":
+          description: Parâmetros ausentes
+        "404":
+          description: Chave de API inválida ou autos não encontrados
+        "422":
+          description: Identificador do processo inválido
+        "429":
+          description: Limite de requisições excedido (30 por minuto)
+
+  /api/v1/process/movement/url:
+    get:
+      tags:
+        - Processes
+      summary: Obter URL do documento da movimentação
+      description: Retorna a URL S3 do documento associado a uma movimentação específica do processo.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idmovimentacoes
+          required: true
+          description: Identificador da movimentação
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: URL S3 do documento
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  s3_url:
+                    type: string
+                    description: URL pré-assinada do arquivo na S3 pronta para download
+                    example: "https://irbotfiles.s3.sa-east-1.amazonaws.com/uploads/processos/documento.pdf?X-Amz-Expires=86400&X-Amz-Signature=exemplo"
+        "400":
+          description: Parâmetros ausentes
+        "404":
+          description: Chave de API inválida ou movimentação não encontrada
+        "422":
+          description: Identificador da movimentação inválido
+        "429":
+          description: Limite de requisições excedido (30 por minuto)
+
+  /api/v1/process/autos/update:
+    post:
+      tags:
+        - Autos
+      summary: Solicitar atualização de autos
+      description: |-
+        Solicita a atualização de autos do processo replicando o fluxo usado na plataforma:
+
+        1. Envie o `idprocessos` do processo retornado pela listagem.
+        2. A chamada é recusada se já houver atualização pendente ou se houve solicitação nos últimos 3 dias para o mesmo processo.
+        3. Use este endpoint após consultar o processo e confirmar que há novas movimentações a sincronizar.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                idprocessos:
+                  type: integer
+                  description: Identificador do processo no workspace
+              required:
+                - idprocessos
+            example:
+              idprocessos: 123
+      responses:
+        "200":
+          description: Solicitação registrada
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                status: success
+                message: Atualização de autos solicitada com sucesso
+        "400":
+          description: Parâmetros inválidos ou credencial ausente
+        "409":
+          description: Já existe atualização em andamento para o processo
+        "429":
+          description: Existe solicitação recente (menos de 3 dias) para o processo
+
+  /api/v1/process/autos/download/request:
+    post:
+      tags:
+        - Autos
+      summary: Solicitar download completo dos autos
+      description: |-
+        Enfileira a geração de um PDF único com todos os autos do processo, usando o mesmo fluxo da plataforma (fila SQS + Lambda).
+
+        1. Informe o `idprocessos` retornado pela listagem de processos.
+        2. A solicitação é recusada se o processo não pertencer ao workspace ou não possuir autos aptos para download.
+        3. O processamento ocorre em segundo plano; consulte o status em `/api/v1/process/autos/download/status`.
+        4. É permitido apenas um download completo a cada 3 dias; solicitações dentro do intervalo retornam erro orientando a usar o download individual de autos.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                idprocessos:
+                  type: integer
+                  description: Identificador do processo no workspace
+              required:
+                - idprocessos
+            example:
+              idprocessos: 456
+      responses:
+        "200":
+          description: Solicitação registrada
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                status: success
+                job_id: merge_671234abcd
+                message: Download dos autos solicitado. Salve o job_id para consultar o status do job solicitado em /api/v1/process/autos/download/status.
+        "400":
+          description: Parâmetros ausentes ou inválidos
+        "404":
+          description: Processo não encontrado para o workspace ou sem autos disponíveis
+        "409":
+          description: Já existe um download dos autos em andamento para o processo
+        "429":
+          description: Existe download recente (menos de 3 dias); utilize o download individual dos autos ou aguarde 3 dias
+
+  /api/v1/process/autos/download/status:
+    get:
+      tags:
+        - Autos
+      summary: Consultar status do download dos autos
+      description: Retorna a situação mais recente do job de merge dos autos e, se concluído, a URL S3 pré-assinada do PDF.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idprocessos
+          required: true
+          description: Identificador do processo no workspace
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: job_id
+          required: false
+          description: Identificador específico do job (opcional; se ausente, usa o último job válido do processo)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Status do download
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                Em processamento:
+                  value:
+                    status: success
+                    job_id: merge_671234abcd
+                    job_status: PENDING
+                    output_url: null
+                    message: Arquivo sendo preparado. Tente novamente em instantes.
+                Concluido:
+                  value:
+                    status: success
+                    job_id: merge_671234abcd
+                    job_status: FINISHED
+                    output_url: https://legalmail.s3-sa-east-1.amazonaws.com/uploads/legalmail/movimentacoes/456/0000000-00.2024.8.26.0001-20240710_153000.pdf
+                    last_merge_at: "2024-07-10 15:30:00"
+                    message: Arquivo pronto para download.
+        "404":
+          description: Processo inválido ou nenhum job localizado
+        "400":
+          description: Parâmetros ausentes
+        "429":
+          description: Limite de requisições excedido (30 por minuto)
+
+  /api/v1/petition/intermediate:
+    post:
+      tags:
+        - Petitions Intermediate
+      summary: Criar petição intermediária
+      description: |
+        Cria uma petição intermediária.
+        Salve o `idpeticoes`, que deve ser usado nas
+        rotas de envio de anexos e do arquivo principal.
+
+        Fluxo recomendado:
+        1. `POST /api/v1/petition/intermediate` para gerar o identificador da petição.
+        2. `POST /api/v1/petition/file` enviando o PDF principal com `idpeticoes` e `idprocessos` retornados.
+        3. `POST /api/v1/petition/attachments` para anexos complementares, quando necessário.
+        4. `POST /api/v1/petition/intermediate/send` definindo `fk_peca` e demais dados do protocolo para concluir o envio.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fk_processo:
+                  type: integer
+                  description: Identificador do processo já existente no workspace
+                tutela_antecipada:
+                  type: integer
+                fk_certificado:
+                  type: integer
+                  description: Identificador do certificado ativo pertencente a um usuário do workspace
+                custas_recolhidas:
+                  type: integer
+                numero_guia:
+                  type: array
+                  description: Lista das numerações das guias de custas recolhidas
+                  items:
+                    type: string
+              required:
+                - fk_processo
+                - fk_certificado
+            example:
+              fk_processo: 456
+              fk_certificado: 34
+              tutela_antecipada: 0
+              custas_recolhidas: 1
+              numero_guia:
+                - "123456789"
+                - "987654321"
+      responses:
+        "200":
+          description: Resultado da operação
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hash_peticao:
+                    type: string
+                  idpeticoes:
+                    type: integer
+              examples:
+                sucesso:
+                  summary: Petição criada
+                  value:
+                    hash_peticao: "9fa0d4c3f2"
+                    idpeticoes: 123
+        "400":
+          description: Requisição inválida
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+              examples:
+                json_invalido:
+                  summary: JSON inválido
+                  value:
+                    error: Invalid JSON
+                campo_obrigatorio:
+                  summary: Campo obrigatório ausente
+                  value:
+                    error: "Missing field: fk_certificado"
+        "401":
+          description: API key not provided
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+              example:
+                error: API key not provided
+        "404":
+          description: Workspace, processo ou certificado não localizado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+              examples:
+                workspace_inexistente:
+                  summary: Workspace não encontrado
+                  value:
+                    error: API key not found
+                processo_invalido:
+                  summary: Processo não pertence ao workspace
+                  value:
+                    error: "Processo não encontrado para este workspace"
+        "405":
+          description: Método não permitido
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+              example:
+                error: Method not allowed
+
+  /api/v1/petition/initial:
+    post:
+      tags:
+        - Petitions Initial
+      summary: Criar nova petição inicial
+      description: |
+        Cria uma ou mais petições vinculadas ao workspace do `api_key` informado.
+
+        - O corpo deve ser um objeto JSON ou uma lista de objetos. Objetos únicos são tratados como uma lista com um item.
+        - Os campos `tribunal` e `instancia` são obrigatórios. O sistema do tribunal (`sistema`) é opcional para casos em que o tribunal possui apenas um sistema, porém será rejeitado se não for enviado e não puder ser inferido automaticamente.
+        - Quando enviados, `tribunal` e `sistema` devem corresponder exatamente aos valores disponibilizados no endpoint `GET /api/v1/petition/tribunals`, respeitando siglas e nomes padronizados.
+        - A instância aceita apenas os valores `1` (1º grau), `2` (2º grau) ou `recursal` (Turmas Recursais).
+        - É possível informar IDs de partes já existentes (`idpoloativo`, `idpolopassivo`). Cada campo aceita um único identificador ou uma lista (array) de IDs. As partes podem ser criadas a partir do endpoint `POST /api/v1/parts`.
+        - Informe `ufTribunal` apenas quando a detecção automática da UF do tribunal não for possível.
+        - Cada item retorna o status individual (`sucesso` ou `erro`), a mensagem de processamento e os dados resultantes ou rejeitados.
+
+        Fluxo recomendado:
+        1. `POST /api/v1/petition/initial` com os dados processuais para gerar `idpeticoes` e `idprocessos` de cada item aceito.
+        2. `POST /api/v1/petition/file` anexando o PDF obrigatório de cada petição criada.
+        3. `POST /api/v1/petition/attachments` para anexos complementares, informando `fk_documentos_tipos` quando necessário.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example:
+              - tribunal: TJSP
+                instancia: "1"
+                sistema: esaj
+                idpoloativo:
+                  - 123
+                  - 789
+                idpolopassivo:
+                  - 456
+              - tribunal: TJBA
+                instancia: "recursal"
+                sistema: projudi
+      responses:
+        "200":
+          description: Resultado do processamento de cada petição enviada
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    status:
+                      type: string
+                      description: Resultado individual da criação
+                      enum:
+                        - sucesso
+                        - erro
+                    mensagem:
+                      type: string
+                      description: Mensagem detalhando o resultado do item
+                    dados:
+                      description: Dados retornados pelo processamento ou payload rejeitado
+                      nullable: true
+                      type: object
+              example:
+                - status: sucesso
+                  mensagem: Processado com sucesso.
+                  dados:
+                    idpeticoes: 789
+                    idprocessos: 456
+                - status: erro
+                  mensagem: Campos obrigatórios ausentes tribunal e instancia.
+                  dados:
+                    tribunal: ""
+                    instancia: null
+        "400":
+          description: JSON inválido ou formato não suportado
+        "401":
+          description: API key not provided
+        "429":
+          description: Limite de requisições excedido (30 por minuto)
+    put:
+      tags:
+        - Petitions Initial
+      summary: Atualizar informações da petição inicial
+      description: |
+        Permite editar os dados do processo associado a uma petição já existente,
+        reaproveitando a lógica interna de validação utilizada na criação de
+        petições iniciais. Todos os campos obrigatórios são validados antes da
+        atualização.
+        - O tribunal e o sistema informados passam pelas mesmas validações da criação de petições iniciais.
+        - É possível atualizar as partes vinculadas ao processo através dos campos `idpoloativo` e `idpolopassivo`, aceitando um único identificador ou uma lista de IDs.
+        - Quando `tipo_distribuicao` for informado como `Por dependência`, é obrigatório enviar `processo_referencia` e `fundamento_legal`. O campo `processo_referencia`, quando enviado, deve obedecer ao padrão CNJ (`NNNNNNN-NN.NNNN.N.NN.NNNN`).
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição que será atualizada
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - ufTribunal
+                - tribunal
+                - sistema
+                - instancia
+                - comarca
+                - classe
+                - assunto
+                - valorCausa
+                - distribuicao
+              properties:
+                ufTribunal:
+                  type: string
+                tribunal:
+                  type: string
+                sistema:
+                  type: string
+                instancia:
+                  type: string
+                comarca:
+                  type: string
+                competencia:
+                  type: string
+                  nullable: true
+                area:
+                  type: string
+                  nullable: true
+                classe:
+                  type: string
+                assunto:
+                  type: string
+                rito:
+                  type: string
+                  nullable: true
+                tipo_processo:
+                  type: string
+                  nullable: true
+                  description: Tipo do processo segundo a classificação do tribunal.
+                tipo_justica:
+                  type: string
+                  nullable: true
+                valorCausa:
+                  type: number
+                  format: float
+                liminar:
+                  type: boolean
+                sigilo:
+                  type: boolean
+                motivo_sigilo:
+                  type: string
+                  nullable: true
+                gratuidade:
+                  type: boolean
+                prioridade:
+                  type: boolean
+                motivo_prioridade:
+                  type: string
+                  nullable: true
+                  description: Motivo informado quando a prioridade legal estiver habilitada.
+                procDependente:
+                  type: boolean
+                100digital:
+                  type: boolean
+                desinteresse_conciliacao:
+                  type: boolean
+                distribuicao:
+                  type: string
+                tipo_distribuicao:
+                  type: string
+                  writeOnly: true
+                  description: |
+                    Tipo da distribuição. Utilize `Por dependência` quando se tratar de distribuição por dependência.
+                    Quando `Por dependência`, os campos `processo_referencia` e `fundamento_legal` tornam-se obrigatórios.
+                    A resposta dos endpoints retorna somente a chave `distribuicao`.
+                processo_referencia:
+                  type: string
+                  nullable: true
+                  description: Número do processo utilizado como referência. Deve seguir o formato CNJ (`NNNNNNN-NN.NNNN.N.NN.NNNN`).
+                fundamento_legal:
+                  type: string
+                  nullable: true
+                  description: Fundamento legal que justifica a distribuição por dependência.
+                atividade_economica:
+                  type: string
+                  nullable: true
+                guia:
+                  type: string
+                  nullable: true
+                querConciliar:
+                  type: boolean
+                pessoaLei14289:
+                  type: boolean
+                  nullable: true
+                intervencaoMp:
+                  type: boolean
+                  nullable: true
+                naoAplicaValorCausa:
+                  type: boolean
+                  nullable: true
+                renuncia60Salarios:
+                  type: boolean
+                  nullable: true
+                prazoCumprimento261:
+                  type: boolean
+                  nullable: true
+                  description: Indica se o processo possui prazo especial de cumprimento do art. 261 do CPC.
+                prazoCumprimento261Descricao:
+                  type: string
+                  nullable: true
+                  description: Texto livre com a descrição do prazo especial de cumprimento do art. 261 do CPC.
+                numero_guia:
+                  type: array
+                  items:
+                    type: string
+                idpoloativo:
+                  description: IDs das partes existentes que compõem o polo ativo do processo.
+                  oneOf:
+                    - type: integer
+                    - type: array
+                      items:
+                        type: integer
+                idpolopassivo:
+                  description: IDs das partes existentes que compõem o polo passivo do processo.
+                  oneOf:
+                    - type: integer
+                    - type: array
+                      items:
+                        type: integer
+            example:
+              ufTribunal: SP
+              tribunal: TJSP
+              sistema: pje
+              instancia: 1º Grau
+              comarca: São Paulo
+              competencia: Cível
+              area: Direito do Consumidor
+              classe: Procedimento Comum Cível
+              assunto: Responsabilidade do Fornecedor
+              rito: Procedimento Comum
+              atividade_economica: SERVIÇOS DE APOIO ADMINISTRATIVO
+              tipo_processo: Procedimento Eletrônico
+              tipo_justica: Estadual
+              valorCausa: 15000.0
+              liminar: false
+              sigilo: false
+              motivo_sigilo: null
+              gratuidade: true
+              prioridade: false
+              motivo_prioridade: null
+              procDependente: false
+              "100digital": true
+              desinteresse_conciliacao: false
+              distribuicao: Sorteio
+              guia: null
+              querConciliar: false
+              tipo_distribuicao: "Por dependência"
+              processo_referencia: "0000000-00.2024.8.26.0001"
+              fundamento_legal: Art. 55 do CPC
+              pessoaLei14289: false
+              intervencaoMp: false
+              naoAplicaValorCausa: false
+              renuncia60Salarios: false
+              prazoCumprimento261: false
+              prazoCumprimento261Descricao: null
+              numero_guia:
+                - "123456"
+              idpoloativo:
+                - 123
+              idpolopassivo:
+                - 456
+      responses:
+        "200":
+          description: Dados atualizados com sucesso
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  peticao:
+                    type: object
+                    properties:
+                      idpeticoes:
+                        type: integer
+                      idprocessos:
+                        type: integer
+                        nullable: true
+                      hash_peticao:
+                        type: string
+                        nullable: true
+                      hash_processo:
+                        type: string
+                        nullable: true
+                      dados:
+                        type: object
+                        additionalProperties: true
+                        properties:
+                          numero_guia:
+                            type: array
+                            items:
+                              type: string
+                          idpoloativo:
+                            type: array
+                            items:
+                              type: integer
+                          idpolopassivo:
+                            type: array
+                            items:
+                              type: integer
+              example:
+                status: success
+                peticao:
+                  idpeticoes: 337051
+                  idprocessos: 309466
+                  hash_peticao: "3c503e5e-392f-4161-ad25-75876e198b4f"
+                  hash_processo: "75f7bc34-ba61-4a0e-83ae-ffadec036526"
+                  dados:
+                    ufTribunal: SP
+                    tribunal: TJSP
+                    sistema: esaj
+                    instancia: "1º Grau"
+                    comarca: "Foro de Arujá"
+                    competencia: Criminal
+                    area: ""
+                    classe: "275 - Notificação para Explicações"
+                    rito: ""
+                    assunto: "DIREITO PENAL > Crimes contra o Patrimônio > Dano (3426)"
+                    tipo_processo: ""
+                    tipo_justica: ""
+                    valorCausa: "0.00"
+                    liminar: 0
+                    sigilo: 0
+                    gratuidade: 0
+                    prioridade: 0
+                    motivo_prioridade: ""
+                    '100digital': 0
+                    desinteresse_conciliacao: 0
+                    pessoaLei14289: 0
+                    intervencaoMp: 0
+                    naoAplicaValorCausa: 0
+                    renuncia60Salarios: 0
+                    distribuicao: "Por sorteio"
+                    processo_referencia: ""
+                    fundamento_legal: ""
+                    motivo_sigilo: ""
+                    atividade_economica: ""
+                    prazoCumprimento261: 0
+                    prazoCumprimento261Descricao: ""
+                    numero_guia: []
+                    idpoloativo: []
+                    idpolopassivo: []
+        "400":
+          description: Requisição inválida
+        "404":
+          description: Petição ou chave de API não encontrada
+        "422":
+          description: Campos obrigatórios do processo não preenchidos
+        "405":
+          description: Método não permitido
+    get:
+      tags:
+        - Petitions Initial
+      summary: Consultar petição inicial existente
+      description: |
+        Recupera os dados normalizados de uma petição inicial já criada
+        através da API, incluindo os valores atuais armazenados no processo
+        e o payload original enviado (quando disponível).
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: Identificador da petição inicial a ser consultada
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Petição inicial encontrada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  peticao:
+                    type: object
+                    properties:
+                      idpeticoes:
+                        type: integer
+                      idprocessos:
+                        type: integer
+                        nullable: true
+                      hash_peticao:
+                        type: string
+                        nullable: true
+                      hash_processo:
+                        type: string
+                        nullable: true
+                      dados:
+                        type: object
+                        additionalProperties: true
+                        properties:
+                          numero_guia:
+                            type: array
+                            items:
+                              type: string
+                          idpoloativo:
+                            type: array
+                            items:
+                              type: integer
+                          idpolopassivo:
+                            type: array
+                            items:
+                              type: integer
+              example:
+                status: success
+                peticao:
+                  idpeticoes: 337051
+                  idprocessos: 309466
+                  hash_peticao: "3c503e5e-392f-4161-ad25-75876e198b4f"
+                  hash_processo: "75f7bc34-ba61-4a0e-83ae-ffadec036526"
+                  dados:
+                    ufTribunal: SP
+                    tribunal: TJSP
+                    sistema: esaj
+                    instancia: "1º Grau"
+                    comarca: "Foro de Arujá"
+                    competencia: Criminal
+                    area: ""
+                    classe: "275 - Notificação para Explicações"
+                    rito: ""
+                    assunto: "DIREITO PENAL > Crimes contra o Patrimônio > Dano (3426)"
+                    tipo_processo: ""
+                    tipo_justica: ""
+                    valorCausa: "0.00"
+                    liminar: 0
+                    sigilo: 0
+                    gratuidade: 0
+                    prioridade: 0
+                    motivo_prioridade: ""
+                    '100digital': 0
+                    desinteresse_conciliacao: 0
+                    pessoaLei14289: 0
+                    intervencaoMp: 0
+                    naoAplicaValorCausa: 0
+                    renuncia60Salarios: 0
+                    distribuicao: "Por sorteio"
+                    processo_referencia: ""
+                    fundamento_legal: ""
+                    motivo_sigilo: ""
+                    atividade_economica: ""
+                    prazoCumprimento261: 0
+                    prazoCumprimento261Descricao: ""
+                    numero_guia: []
+                    idpoloativo: []
+                    idpolopassivo: []
+        "400":
+          description: idpeticoes nao informado
+        "401":
+          description: API key not provided
+        "404":
+          description: Petição não encontrada
+        "409":
+          description: Petição não é do tipo inicial
+        "422":
+          description: idpeticoes inválido
+        "429":
+          description: Limite de requisições excedido (30 por minuto)
+    delete:
+      tags:
+        - Petitions Initial
+      summary: Deletar petição inicial
+      description: |
+        Deleta a petição inicial e o processo criado junto ao id da petição.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: Identificador da petição inicial a ser deletada
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Petição inicial deletada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  dados:
+                    type: object
+                    properties:
+                      idpeticoes:
+                        type: integer
+                      active:
+                        type: integer
+              example:
+                status: success
+                message: Petição inicial deletada com sucesso.
+                dados:
+                  idpeticoes: 123
+        "400":
+          description: idpeticoes não informado
+        "401":
+          description: API key not provided
+        "404":
+          description: Petição não encontrada
+        "409":
+          description: Petição não é do tipo inicial
+        "422":
+          description: idpeticoes inválido
+        "429":
+          description: Limite de requisições excedido (30 por minuto)
+  /api/v1/petition/file:
+    post:
+      tags:
+        - Petitions
+      summary: Enviar arquivo principal da petição
+      description: |
+        Upload do documento principal da petição.
+        Somente arquivos em PDF sao aceitos.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+        - in: query
+          name: idprocessos
+          required: true
+          description: ID do processo
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Resultado do upload
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: API key not provided
+  /api/v1/petition/attachments:
+    post:
+      tags:
+        - Attachments
+      summary: Enviar anexos da petição
+      description: |
+        Upload de anexos para a petição.
+        Somente arquivos em PDF sao aceitos.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+        - in: query
+          name: fk_documentos_tipos
+          required: true
+          description: Tipo do documento anexado (conforme /api/v1/petition/attachment/types)
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Resultado do upload
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: string
+                    description: Mensagem de sucesso (String JSON)
+                    example: "success"
+                  - type: object
+                    description: Erro de validação de regra de negócio (Status da petição)
+                    properties:
+                      status:
+                        type: string
+                      message:
+                        type: string
+                    example:
+                      status: error
+                      message: "O status da petição não permite adicionar anexos."
+        "400":
+          description: Requisição inválida, parâmetros ausentes ou erro no upload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  error:
+                    type: string
+              examples:
+                campos_ausentes:
+                  summary: Parâmetros obrigatórios não enviados
+                  value:
+                    error: "Missing fields: idpeticoes are required"
+                tipo_invalido:
+                  summary: Tipo de documento não permitido para a petição
+                  value:
+                    status: error
+                    message: "Tipo de documento informado não é válido para a petição. Consulte os tipos disponíveis para a petição em /api/v1/petition/attachment/types."
+                erro_upload:
+                  summary: Falha no envio ou conversão do arquivo
+                  value:
+                    error: "Erro ao enviar arquivo"
+        "401":
+          description: API key inválida ou não informada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+              example:
+                error: API key invalid
+        "405":
+          description: Método não permitido (esperado POST)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+              example:
+                error: Method not allowed
+  /api/v1/petition/attachment/types:
+    get:
+      tags:
+        - Attachments
+      summary: Listar tipos de documento por petição
+      description: Retorna os tipos de documento permitidos para a petição informada.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lista de tipos de documento
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    iddocumentos_tipos:
+                      type: integer
+                    nome:
+                      type: string
+        "401":
+          description: API key not provided
+  /api/v1/petition/county:
+    get:
+      tags:
+        - Petitions Initial
+      summary: Listar comarcas disponíveis para a petição inicial
+      description: |
+        Retorna as comarcas elegíveis para protocolo conforme os dados do processo
+        associado à petição informada. Disponível apenas para petições iniciais
+        vinculadas ao workspace da chave de API fornecida.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lista de comarcas disponíveis
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    nome:
+                      type: string
+              example:
+                - nome: "Seção Judiciária do Distrito Federal"
+                - nome: "Seção Judiciária de Mato Grosso"
+        "400":
+          description: Parâmetros obrigatórios ausentes
+        "404":
+          description: Petição ou chave de API não encontrada
+        "422":
+          description: Petição não é inicial ou dados obrigatórios do processo não preenchidos
+
+  /api/v1/economic-activities:
+    get:
+      tags:
+        - Petitions Initial
+      summary: Listar atividades econômicas
+      description: |
+        Disponibiliza as atividades econômicas aceitas para petições em tribunais trabalhistas (TRTs).
+        Para tribunais que não são TRT, a API retornará que não há necessidade de atividades econômicas.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lista de atividades econômicas
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    nome:
+                      type: string
+              example:
+                - nome: INDÚSTRIA DO SETOR TÊXTIL
+                - nome: SERVIÇOS DE APOIO ADMINISTRATIVO
+        "401":
+          description: API key not provided
+        "404":
+          description: API key not found
+        "422":
+          description: Tribunal informado não exige atividades econômicas
+  /api/v1/process-types:
+    get:
+      tags:
+        - Petitions Initial
+      summary: Listar tipos de processo
+      description: |
+        Disponibiliza os tipos de processo aceitos para petições no TJGO.
+        Para outros tribunais, a API indicará que não há necessidade de tipos de processo.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lista de tipos de processo
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    nome:
+                      type: string
+              example:
+                - nome: CUMPRIMENTO DE SENTENÇA
+                - nome: PROCEDIMENTO DO JUIZADO ESPECIAL CÍVEL
+        "401":
+          description: API key not provided
+        "404":
+          description: API key not found
+        "422":
+          description: Tribunal informado não exige tipos de processo
+  /api/v1/petition/specialties:
+    get:
+      tags:
+        - Petitions Initial
+      summary: Listar especialidades disponíveis para a petição inicial
+      description: |
+        Retorna as especialidades elegíveis com base nos dados do processo
+        associado à petição informada. Os filtros necessários são calculados a
+        partir da petição.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lista de especialidades disponíveis
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    nome:
+                      type: string
+                    fk_tribunais_referencias:
+                      type: string
+              example:
+                - nome: "Direito do Consumidor"
+                  fk_tribunais_referencias: "10"
+                - nome: "Direito Processual Civil"
+                  fk_tribunais_referencias: "10"
+        "400":
+          description: Parâmetros obrigatórios ausentes
+        "404":
+          description: Petição ou chave de API não encontrada
+        "422":
+          description: Dados obrigatórios do processo não preenchidos
+  /api/v1/petition/areas:
+    get:
+      tags:
+        - Petitions Initial
+      summary: Listar áreas disponíveis para a petição inicial
+      description: |
+        Retorna as áreas elegíveis com base nos dados do processo associado à
+        petição informada. Os filtros necessários são calculados a partir da
+        petição.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lista de áreas disponíveis
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    nome:
+                      type: string
+                    fk_tribunais_referencias:
+                      type: string
+              example:
+                - nome: "Cível"
+                  fk_tribunais_referencias: "10"
+                - nome: "Juizado Especial Cível"
+                  fk_tribunais_referencias: "10"
+        "400":
+          description: Parâmetros obrigatórios ausentes
+        "404":
+          description: Petição ou chave de API não encontrada
+        "422":
+          description: Dados obrigatórios do processo não preenchidos
+  /api/v1/petition/ritos:
+    get:
+      tags:
+        - Petitions Initial
+      summary: Listar ritos disponíveis para a petição inicial
+      description: |
+        Retorna os ritos habilitados para o processo vinculado à petição
+        informada. As informações de tribunal, instância e sistema são obtidas
+        automaticamente a partir da petição.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lista de ritos disponíveis
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    nome:
+                      type: string
+                    fk_tribunais_referencias:
+                      type: string
+              example:
+                - nome: "Rito ordinário (comum)"
+                  fk_tribunais_referencias: "10"
+                - nome: "Juizado especial"
+                  fk_tribunais_referencias: "10"
+        "400":
+          description: Parâmetros obrigatórios ausentes
+        "404":
+          description: Petição ou chave de API não encontrada
+        "422":
+          description: Dados obrigatórios do processo não preenchidos
+  /api/v1/petition/justice-types:
+    get:
+      tags:
+        - Petitions Initial
+      summary: Listar tipos de justiça disponíveis para a petição inicial
+      description: |
+        Retorna os tipos de justiça configurados para o processo vinculado à
+        petição informada. As informações de tribunal, instância, área, rito e
+        classe processual são derivadas automaticamente a partir da petição.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lista de tipos de justiça disponíveis
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    nome:
+                      type: string
+              example:
+                - nome: "Justiça Comum"
+                - nome: "Juizado Especial"
+        "400":
+          description: Parâmetros obrigatórios ausentes
+        "404":
+          description: Petição ou chave de API não encontrada
+        "422":
+          description: Dados obrigatórios do processo não preenchidos
+  /api/v1/petition/classes:
+    get:
+      tags:
+        - Petitions Initial
+      summary: Listar classes processuais disponíveis para a petição inicial
+      description: |
+        Retorna as classes processuais elegíveis considerando as configurações
+        do processo associado à petição informada. As informações de tribunal,
+        instância, foro, área, rito e tipo de processo são obtidas
+        automaticamente a partir da petição, sem necessidade de parâmetros de
+        sobreposição.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lista de classes processuais disponíveis
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    nome:
+                      type: string
+              example:
+                - nome: "Procedimento Comum Cível"
+                - nome: "Mandado de Segurança"
+        "400":
+          description: Parâmetros obrigatórios ausentes
+        "404":
+          description: Petição ou chave de API não encontrada
+        "422":
+          description: Dados obrigatórios do processo não preenchidos
+  /api/v1/petition/subjects:
+    get:
+      tags:
+        - Petitions Initial
+      summary: Listar assuntos disponíveis para a petição inicial
+      description: |
+        Retorna os assuntos compatíveis considerando as configurações do
+        processo associado à petição informada. As informações de tribunal,
+        instância, foro, especialidade, classe processual, tipo de processo e
+        sistema do tribunal são obtidas automaticamente a partir da petição.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lista de assuntos disponíveis
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    nome:
+                      type: string
+              example:
+                - nome: "DIREITO DO CONSUMIDOR > Contratos de Consumo > Bancários"
+                - nome: "DIREITO CIVIL > Obrigações > Responsabilidade Civil"
+        "400":
+          description: Parâmetros obrigatórios ausentes
+        "404":
+          description: Petição ou chave de API não encontrada
+        "422":
+          description: Dados obrigatórios do processo não preenchidos
+  /api/v1/petition/legal-priority-reasons:
+    get:
+      tags:
+        - Petitions Initial
+      summary: Listar motivos de prioridade legal disponíveis para a petição inicial
+      description: |
+        Retorna os motivos de prioridade legal aceitos pelo tribunal considerando
+        os parâmetros já informados na petição inicial. As informações de tribunal,
+        instância e sistema do tribunal são obtidas automaticamente a partir da
+        petição vinculada.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lista de motivos de prioridade legal disponíveis
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    nome:
+                      type: string
+              example:
+                - nome: "Pessoa com idade igual ou superior a 80 anos"
+                - nome: "Pessoa com doença grave"
+        "400":
+          description: Parâmetros obrigatórios ausentes
+        "404":
+          description: Petição ou chave de API não encontrada
+        "422":
+          description: Dados obrigatórios do processo não preenchidos
+  /api/v1/petition/court-fee-waiver-reasons:
+    get:
+      tags:
+        - Petitions Initial
+      summary: Listar motivos de não recolhimento de custas disponíveis para a petição inicial
+      description: |
+        Retorna os motivos aceitos pelo tribunal para justificar o não recolhimento
+        das custas processuais considerando os parâmetros já informados na petição
+        inicial. As informações de tribunal e sistema do tribunal são obtidas
+        automaticamente a partir da petição vinculada.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lista de motivos de não recolhimento de custas disponíveis
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    nome:
+                      type: string
+              example:
+                - nome: "Assistência judiciária gratuita deferida"
+                - nome: "Entidade isenta nos termos da legislação estadual"
+        "400":
+          description: Parâmetros obrigatórios ausentes
+        "404":
+          description: Petição ou chave de API não encontrada
+        "422":
+          description: Dados obrigatórios do processo não preenchidos
+  /api/v1/petition/tribunals:
+    get:
+      tags:
+        - Petitions
+      summary: Listar tribunais e sistemas disponíveis
+      description: |
+        Retorna a relação de tribunais com os sistemas judiciais vinculados,
+        agrupando os resultados por tribunal.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Lista de tribunais com seus sistemas disponíveis
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    tribunal:
+                      type: string
+                    sistemas:
+                      type: array
+                      items:
+                        type: string
+              example:
+                - tribunal: TJSP
+                  sistemas:
+                    - eproc
+                    - esaj
+                - tribunal: TRF-3
+                  sistemas:
+                    - pje
+        "400":
+          description: Parâmetros obrigatórios ausentes
+        "404":
+          description: Chave de API não encontrada
+  /api/v1/petition/types:
+    get:
+      tags:
+        - Petitions
+      summary: Listar tipos de petição disponíveis
+      description: Lista os tipos de petição disponíveis.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lista de peças
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pecas:
+                    type: array
+                    items:
+                      type: object
+              example:
+                pecas:
+                  - idpecas: 1
+                    nome: Peca A
+                  - idpecas: 2
+                    nome: Peca B
+        "401":
+          description: API key not provided
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+              example:
+                status: error
+                message: Chave de api invalida.
+        "400":
+          description: Parâmetros obrigatórios não informados
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+              example:
+                status: error
+                message: Parametros ausentes.
+        "405":
+          description: Método não permitido
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+              example:
+                error: Method not allowed
+  /api/v1/petition/intermediate/send:
+    post:
+      tags:
+        - Petitions Intermediate
+      summary: Protocolar petição intermediária
+      description: O ID do workspace é obtido automaticamente a partir da `api_key`.
+
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: idpeticoes
+          required: true
+          description: ID da petição
+          schema:
+            type: integer
+        - in: query
+          name: idprocessos
+          required: true
+          description: ID do processo
+          schema:
+            type: integer
+        - in: query
+          name: fk_peca
+          required: true
+          description: ID da peça selecionada
+          schema:
+            type: integer
+        - in: query
+          name: data_protocolo
+          required: false
+          description: Agendamento opcional do protocolo (formato Y-m-d)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Resultado do protocolo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+              example:
+                status: success
+        "400":
+          description: Requisição inválida
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                campo_obrigatorio:
+                  summary: Campo obrigatório ausente
+                  value:
+                    error: "Missing field: fk_peca"
+                peca_invalida:
+                  summary: Peça não disponível para a petição
+                  value:
+                    status: error
+                    message: "Peça informada não é válida para a petição."
+        "401":
+          description: API key not provided
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+              example:
+                status: error
+                message: API key invalid
+        "405":
+          description: Método não permitido
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+              example:
+                error: Method not allowed
+        "500":
+          description: Falha ao protocolar a petição
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+              example:
+                status: error
+                message: Erro ao enviar petição intermediária.
+  /api/v1/petition/status:
+    post:
+      tags:
+        - Petitions
+      summary: Consultar status da petição
+      description: Informa o andamento atual da petição identificada pelo ID.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                idpeticoes:
+                  type: integer
+              required:
+                - idpeticoes
+      responses:
+        "200":
+          description: Status atual da petição
+          content:
+            application/json:
+              schema:
+                type: integer
+              example: 3
+        "400":
+          description: Requisição inválida
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                formato_invalido:
+                  summary: Formato do payload inválido
+                  value:
+                    error: "Expected format: object"
+                campo_obrigatorio:
+                  summary: Campo obrigatório ausente
+                  value:
+                    error: "Missing field: idpeticoes"
+        "401":
+          description: API key not provided
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                error: API key not provided
+        "404":
+          description: Recurso não encontrado
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                workspace_inexistente:
+                  summary: Workspace não encontrado para a API key
+                  value:
+                    error: API key not found
+                peticao_inexistente:
+                  summary: Petição ou status não localizado no workspace
+                  value:
+                    error: "Petição não encontrada para este workspace"
+        "405":
+          description: Método não permitido
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                error: Method not allowed
+        "429":
+          description: Limite de consultas excedido
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                error: Too many requests
+
+    /api/v1/process/assign:
+      post:
+        tags:
+          - Processes
+        summary: Encarregar usuários em processo
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                idprocessos:
+                  type: integer
+                idusuarios:
+                  type: integer
+              required:
+                - idprocessos
+                - idusuarios
+      responses:
+        "200":
+          description: Resultado do encarregamento
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                status: success
+        "401":
+          description: API key not provided
+
+  /api/v1/process/archive:
+    post:
+      tags:
+        - Processes
+      summary: Arquivar ou desarquivar processo
+      description: |
+        Arquiva ou desarquiva o processo informado.
+        Quando um processo é arquivado, seu prazo é removido.
+        Ao desarquivá-lo, o processo retorna para o inbox de entrada.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fk_processo:
+                  type: integer
+              required:
+                - fk_processo
+      responses:
+        "200":
+          description: Operação realizada com sucesso
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                examples:
+                  Arquivado:
+                    value:
+                      status: success
+                      message: Processo arquivado com sucesso.
+                  Desarquivado:
+                    value:
+                      status: success
+                      message: Processo desarquivado com sucesso.
+
+  /api/v1/parts:
+    get:
+      tags:
+        - Parts
+      summary: Listar partes
+      description: Caso os parâmetros offset e limit não sejam enviados, serão utilizados os valores padrão offset=0 e limit=50.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: offset
+          required: false
+          description: Offset para paginação
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: limit
+          required: false
+          description: Limite de resultados (máximo 50)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        "200":
+          description: Lista de partes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    polo:
+                      type: string
+                    nome:
+                      type: string
+                    documento:
+                      type: string
+                    email:
+                      type: string
+                    celular:
+                      type: string
+                    rg:
+                      type: string
+                    orgao:
+                      type: string
+                    uf_docto:
+                      type: string
+                    nacionalidade:
+                      type: string
+                    estado_civil:
+                      type: string
+                    profissao:
+                      type: string
+                    endereco_pais:
+                      type: string
+                    endereco_cep:
+                      type: string
+                    endereco_logradouro:
+                      type: string
+                    endereco_numero:
+                      type: string
+                    endereco_complemento:
+                      type: string
+                    endereco_bairro:
+                      type: string
+                    endereco_cidade:
+                      type: string
+                    endereco_uf:
+                      type: string
+                    genero:
+                      type: string
+                    data_nascimento:
+                      type: string
+                    uf_nascimento:
+                      type: string
+                    cidade_nascimento:
+                      type: string
+                    nome_mae:
+                      type: string
+                    nome_pai:
+                      type: string
+                    nit:
+                      type: string
+                    pis:
+                      type: string
+                    pasep:
+                      type: string
+                    personalidade:
+                      type: string
+                    nao_possui_rg:
+                      type: string
+                    nao_possui_cpf:
+                      type: string
+                    citacao_online:
+                      type: integer
+                      enum: [0, 1]
+                      description: |
+                        - Aceito **somente para o polo passivo** (`polo: passivo`).
+                        - O valor `1` **somente é permitido** quando o campo `nome` corresponder,
+                          de forma case-insensitive, a:
+                            - "INSTITUTO NACIONAL DO SEGURO SOCIAL"
+                            - "INSTITUTO NACIONAL DO SEGURO SOCIAL - INSS"
+                        - Para qualquer outro nome ou quando `polo` não for `passivo`,
+                          o valor será ignorado ou tratado como `0`.
+                    nome_orgao_vinculacao:
+                      type: string
+                      description: |
+                        - Aceito **somente para:** polo passivo (`polo: passivo`), personalidade "Autoridade Coatora" e sistema "PJe" (exceto o PJe do TRF-1 e TRF-5).
+                    cnpj_orgao_vinculacao:
+                      type: string
+                      description: |
+                        - Aceito **somente para:** polo passivo (`polo: passivo`), personalidade "Autoridade Coatora" e sistema "PJe" (exceto o PJe do TRF-1 e TRF-5).
+                    email_orgao_vinculacao:
+                      type: string
+                      description: |
+                        - Aceito **somente para:** polo passivo (`polo: passivo`), personalidade "Autoridade Coatora" e sistema "PJe" (exceto o PJe do TRF-1 e TRF-5).
+              example:
+                - id: 1
+                  polo: ativo
+                  nome: Parte Exemplo
+                  documento: "00000000000"
+                  email: exemplo@exemplo.com
+                  celular: "(11) 99999-9999"
+                  rg: "1234567"
+                  orgao: SSP
+                  uf_docto: SP
+                  nacionalidade: Brasileiro
+                  estado_civil: Solteiro
+                  profissao: Advogado
+                  endereco_pais: Brasil
+                  endereco_cep: "00000-000"
+                  endereco_logradouro: Rua X
+                  endereco_numero: "123"
+                  endereco_complemento: Sala 1
+                  endereco_bairro: Centro
+                  endereco_cidade: Sao Paulo
+                  endereco_uf: SP
+                  genero: MASCULINO
+                  data_nascimento: "01/01/1990"
+                  uf_nascimento: SP
+                  cidade_nascimento: Sao Paulo
+                  nome_mae: Maria
+                  nome_pai: Joao
+                  nit: "123456"
+                  pis: "12345678900"
+                  pasep: "12345678900"
+                  personalidade: Pessoa fisica
+                  nao_possui_rg: "0"
+                  nao_possui_cpf: "0"
+                  citacao_online: 0
+                  nome_orgao_vinculacao: "Tribunal de Justiça de São Paulo"
+                  cnpj_orgao_vinculacao: "12.345.678/0001-90"
+                  email_orgao_vinculacao: "contato@tjsp.jus.br"
+        "400":
+          description: Parâmetro offset ou limit inválido
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                OffsetInvalido:
+                  value:
+                    error: Offset must be zero or positive
+                LimitInvalido:
+                  value:
+                    error: Limit must be between 1 and 50
+        "401":
+          description: API key not provided
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                error: API key not provided
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                error: API key not found
+        "429":
+          description: Limite de requisições excedido (30 por minuto)
+    post:
+      tags:
+        - Parts
+      summary: Criar partes
+      description: |
+        A chave **polo** é obrigatória e deve conter o valor `ativo` ou `passivo`.
+        A chave **personalidade** é opcional e, se informada, deve ser uma das seguintes:
+        "Pessoa jurídica", "Pessoa física", "Massa falida", "Espólio" ou "Autoridade coatora".
+        O campo **documento** deve seguir o formato `xxx.xxx.xxx-xx` (CPF) ou
+        `xx.xxx.xxx/xxxx-xx` (CNPJ).
+        Quando informado, **data_nascimento** deve estar no formato `dd/mm/yyyy`.
+        **endereco_cep** aceita o padrão `00000-000`.
+        Quando informado, **celular** deve seguir o formato `(xx) xxxxx-xxxx`.
+        Quando informado, **email** deve ser um endereco de e-mail valido.
+        Se enviado, **genero** deve ser `MASCULINO` ou `FEMININO`.
+        Se enviado, **nacionalidade** deve ser "Brasileiro" ou "Estrangeiro".
+        Os campos **nao_possui_rg** e **nao_possui_cpf** aceitam apenas `0` ou `1`.
+        Se enviado, **estado_civil** deve ser: "Solteiro(a)", "Casado(a)", "Em união estável", "Viúvo(a)", "Separado(a)" ou "Divorciado(a)".
+        A chave **profissao** deve corresponder a uma profissão da rota `/api/v1/professions`.
+        A chave **orgao** deve corresponder a um órgão expedidor da rota `/api/v1/issuing-agencies`.
+        Se enviados, **uf_docto**, **uf_nascimento** e **endereco_uf** devem ter exatamente duas letras maiúsculas.
+        Se enviados, **nit**, **pis** e **pasep** devem seguir o formato `XXX.XXXXX.XX-X`.
+        As chaves **nome_orgao_vinculacao**, **cnpj_orgao_vinculacao** e **email_orgao_vinculacao** são aceitas somente para partes do polo passivo (`polo: passivo`) com personalidade "Autoridade Coatora" em sistemas PJe (exceto o PJe do TRF-1 e TRF-5).
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                polo:
+                  type: string
+                nome:
+                  type: string
+                documento:
+                  type: string
+                email:
+                  type: string
+                celular:
+                  type: string
+                rg:
+                  type: string
+                orgao:
+                  type: string
+                uf_docto:
+                  type: string
+                nacionalidade:
+                  type: string
+                estado_civil:
+                  type: string
+                profissao:
+                  type: string
+                endereco_pais:
+                  type: string
+                endereco_cep:
+                  type: string
+                endereco_logradouro:
+                  type: string
+                endereco_numero:
+                  type: string
+                endereco_complemento:
+                  type: string
+                endereco_bairro:
+                  type: string
+                endereco_cidade:
+                  type: string
+                endereco_uf:
+                  type: string
+                genero:
+                  type: string
+                data_nascimento:
+                  type: string
+                uf_nascimento:
+                  type: string
+                cidade_nascimento:
+                  type: string
+                nome_mae:
+                  type: string
+                nome_pai:
+                  type: string
+                nit:
+                  type: string
+                pis:
+                  type: string
+                pasep:
+                  type: string
+                personalidade:
+                  type: string
+                nao_possui_rg:
+                  type: string
+                nao_possui_cpf:
+                  type: string
+                citacao_online:
+                  type: integer
+                  enum: [0, 1]
+                  description: |
+                    - Aceito **somente para o polo passivo** (`polo: passivo`).
+                    - O valor `1` **somente é permitido** quando o campo `nome` corresponder,
+                      de forma case-insensitive, a:
+                        - "INSTITUTO NACIONAL DO SEGURO SOCIAL"
+                        - "INSTITUTO NACIONAL DO SEGURO SOCIAL - INSS"
+                    - Para qualquer outro nome ou quando `polo` não for `passivo`,
+                      o valor será ignorado ou tratado como `0`.
+                nome_orgao_vinculacao:
+                  type: string
+                  description: |
+                    - Aceito **somente para:** polo passivo (`polo: passivo`), personalidade "Autoridade Coatora" e sistema "PJe" (exceto o PJe do TRF-1 e TRF-5).
+                cnpj_orgao_vinculacao:
+                  type: string
+                  description: |
+                    - Aceito **somente para:** polo passivo (`polo: passivo`), personalidade "Autoridade Coatora" e sistema "PJe" (exceto o PJe do TRF-1 e TRF-5).
+                email_orgao_vinculacao:
+                  type: string
+                  description: |
+                    - Aceito **somente para:** polo passivo (`polo: passivo`), personalidade "Autoridade Coatora" e sistema "PJe" (exceto o PJe do TRF-1 e TRF-5).
+              required:
+                - polo
+                - nome
+                - documento
+      responses:
+        "200":
+          description: Parte criada
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                id: 10
+        "401":
+          description: API key not provided
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                error: API key not provided
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                error: API key not found
+        "400":
+          description: Erro de validação do payload
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                PayloadInvalido:
+                  value:
+                    error: Payload invalido
+                PoloAusente:
+                  value:
+                    error: Campo polo obrigatorio
+                PoloInvalido:
+                  value:
+                    error: Polo invalido
+                ErroValidacao:
+                  value:
+                    error: Documento invalido
+        "429":
+          description: Limite de requisições excedido (30 por minuto)
+    put:
+      tags:
+        - Parts
+      summary: Editar parte
+      description: |
+        Os campos **id** e **polo** são obrigatórios. Os campos não enviados permanecerão inalterados.
+
+        **NOTA**: Não é possível alterar o valor do campo **polo** de uma parte já criada. O polo deve permanecer o mesmo durante a edição.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: integer
+                polo:
+                  type: string
+                nome:
+                  type: string
+                documento:
+                  type: string
+                email:
+                  type: string
+                celular:
+                  type: string
+                rg:
+                  type: string
+                orgao:
+                  type: string
+                uf_docto:
+                  type: string
+                nacionalidade:
+                  type: string
+                estado_civil:
+                  type: string
+                profissao:
+                  type: string
+                endereco_pais:
+                  type: string
+                endereco_cep:
+                  type: string
+                endereco_logradouro:
+                  type: string
+                endereco_numero:
+                  type: string
+                endereco_complemento:
+                  type: string
+                endereco_bairro:
+                  type: string
+                endereco_cidade:
+                  type: string
+                endereco_uf:
+                  type: string
+                genero:
+                  type: string
+                data_nascimento:
+                  type: string
+                uf_nascimento:
+                  type: string
+                cidade_nascimento:
+                  type: string
+                nome_mae:
+                  type: string
+                nome_pai:
+                  type: string
+                nit:
+                  type: string
+                pis:
+                  type: string
+                pasep:
+                  type: string
+                personalidade:
+                  type: string
+                nao_possui_rg:
+                  type: string
+                nao_possui_cpf:
+                  type: string
+                citacao_online:
+                  type: integer
+                  enum: [0, 1]
+                  description: |
+                    - Aceito **somente para o polo passivo** (`polo: passivo`).
+                    - O valor `1` **somente é permitido** quando o campo `nome` corresponder,
+                      de forma case-insensitive, a:
+                        - "INSTITUTO NACIONAL DO SEGURO SOCIAL"
+                        - "INSTITUTO NACIONAL DO SEGURO SOCIAL - INSS"
+                    - Para qualquer outro nome ou quando `polo` não for `passivo`,
+                      o valor será ignorado ou tratado como `0`.
+                nome_orgao_vinculacao:
+                  type: string
+                  description: |
+                    - Aceito **somente para:** polo passivo (`polo: passivo`), personalidade "Autoridade Coatora" e sistema "PJe" (exceto o PJe do TRF-1 e TRF-5).
+                cnpj_orgao_vinculacao:
+                  type: string
+                  description: |
+                    - Aceito **somente para:** polo passivo (`polo: passivo`), personalidade "Autoridade Coatora" e sistema "PJe" (exceto o PJe do TRF-1 e TRF-5).
+                email_orgao_vinculacao:
+                  type: string
+                  description: |
+                    - Aceito **somente para:** polo passivo (`polo: passivo`), personalidade "Autoridade Coatora" e sistema "PJe" (exceto o PJe do TRF-1 e TRF-5).
+              required:
+                - id
+                - polo
+                - nome
+                - documento
+      responses:
+        "200":
+          description: Parte atualizada
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                status: success
+        "401":
+          description: API key not provided
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                error: API key not provided
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                error: API key not found
+        "400":
+          description: Erro de validação ou parte inexistente
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                PayloadInvalido:
+                  value:
+                    error: Payload invalido
+                CamposObrigatorios:
+                  value:
+                    error: Campos id e polo sao obrigatorios
+                PoloInvalido:
+                  value:
+                    error: Polo invalido
+                ErroValidacao:
+                  value:
+                    error: Documento invalido
+                ParteNaoEncontrada:
+                  value:
+                    error: Parte nao encontrada no polo informado
+        "429":
+          description: Limite de requisições excedido (30 por minuto)
+    delete:
+      tags:
+        - Parts
+      summary: Deletar parte
+      description: Remove a parte informada. Os campos **id** e **polo** são obrigatórios para a exclusão.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: integer
+                polo:
+                  type: string
+              required:
+                - id
+                - polo
+            example:
+              id: 10
+              polo: ativo
+      responses:
+        "200":
+          description: Parte deletada
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                status: success
+        "401":
+          description: API key not provided
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                error: API key not provided
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                error: API key not found
+        "400":
+          description: Erro de validação ou parte não encontrada
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                PayloadInvalido:
+                  value:
+                    error: Payload invalido
+                CamposObrigatorios:
+                  value:
+                    error: Campos id e polo sao obrigatorios
+                PoloInvalido:
+                  value:
+                    error: Polo invalido
+                ParteNaoEncontrada:
+                  value:
+                    error: Parte nao encontrada
+        "429":
+          description: Limite de requisições excedido (30 por minuto)
+
+  /api/v1/parts/search:
+    get:
+      tags:
+        - Parts
+      summary: Buscar partes
+      description: |
+        Pesquisa partes do workspace pelo polo informado. É obrigatório informar `polo` e `api_key`,
+        além de pelo menos um dos campos `nome` ou `documento`.
+
+        O documento deve seguir o formato `xxx.xxx.xxx-xx` (CPF) ou `xx.xxx.xxx/xxxx-xx` (CNPJ).
+        O nome aceita busca parcial (LIKE), permitindo acentos ou abreviações. Caso os parâmetros
+        `offset` e `limit` não sejam enviados, serão utilizados os valores padrão `offset=0` e
+        `limit=50`.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: polo
+          required: true
+          description: Polo da parte a ser retornada
+          schema:
+            type: string
+            enum: [ativo, passivo]
+        - in: query
+          name: nome
+          required: false
+          description: Nome da parte para busca parcial (obrigatório se o documento não for informado)
+          schema:
+            type: string
+        - in: query
+          name: documento
+          required: false
+          description: CPF ou CNPJ no formato `xxx.xxx.xxx-xx` ou `xx.xxx.xxx/xxxx-xx` (obrigatório se o nome não for informado)
+          schema:
+            type: string
+            pattern: "^(\\d{3}\\.\\d{3}\\.\\d{3}-\\d{2}|\\d{2}\\.\\d{3}\\.\\d{3}/\\d{4}-\\d{2})$"
+        - in: query
+          name: offset
+          required: false
+          description: Offset para paginação
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: limit
+          required: false
+          description: Limite de resultados (máximo 50)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+      responses:
+        "200":
+          description: Lista de partes encontradas
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    polo:
+                      type: string
+                    nome:
+                      type: string
+                    documento:
+                      type: string
+                    email:
+                      type: string
+                    celular:
+                      type: string
+                    rg:
+                      type: string
+                    orgao:
+                      type: string
+                    uf_docto:
+                      type: string
+                    nacionalidade:
+                      type: string
+                    estado_civil:
+                      type: string
+                    profissao:
+                      type: string
+                    endereco_pais:
+                      type: string
+                    endereco_cep:
+                      type: string
+                    endereco_logradouro:
+                      type: string
+                    endereco_numero:
+                      type: string
+                    endereco_complemento:
+                      type: string
+                    endereco_bairro:
+                      type: string
+                    endereco_cidade:
+                      type: string
+                    endereco_uf:
+                      type: string
+                    genero:
+                      type: string
+                    data_nascimento:
+                      type: string
+                    uf_nascimento:
+                      type: string
+                    cidade_nascimento:
+                      type: string
+                    nome_mae:
+                      type: string
+                    nome_pai:
+                      type: string
+                    nit:
+                      type: string
+                    pis:
+                      type: string
+                    pasep:
+                      type: string
+                    personalidade:
+                      type: string
+                    nao_possui_rg:
+                      type: string
+                    nao_possui_cpf:
+                      type: string
+                    citacao_online:
+                      type: integer
+                      enum: [0, 1]
+                      description: |
+                        - Aceito **somente para o polo passivo** (`polo: passivo`).
+                        - O valor `1` **somente é permitido** quando o campo `nome` corresponder,
+                          de forma case-insensitive, a:
+                            - "INSTITUTO NACIONAL DO SEGURO SOCIAL"
+                            - "INSTITUTO NACIONAL DO SEGURO SOCIAL - INSS"
+                        - Para qualquer outro nome ou quando `polo` não for `passivo`,
+                          o valor será ignorado ou tratado como `0`.
+                    nome_orgao_vinculacao:
+                      type: string
+                      description: |
+                        - Aceito **somente para:** polo passivo (`polo: passivo`), personalidade "Autoridade Coatora" e sistema "PJe" (exceto o PJe do TRF-1 e TRF-5).
+                    cnpj_orgao_vinculacao:
+                      type: string
+                      description: |
+                        - Aceito **somente para:** polo passivo (`polo: passivo`), personalidade "Autoridade Coatora" e sistema "PJe" (exceto o PJe do TRF-1 e TRF-5).
+                    email_orgao_vinculacao:
+                      type: string
+                      description: |
+                        - Aceito **somente para:** polo passivo (`polo: passivo`), personalidade "Autoridade Coatora" e sistema "PJe" (exceto o PJe do TRF-1 e TRF-5).
+              example:
+                - id: 2
+                  polo: passivo
+                  nome: Empresa Exemplo
+                  documento: "12.345.678/0001-90"
+                  email: contato@empresa.com
+                  celular: "(11) 90000-0000"
+                  rg: "1234567"
+                  orgao: SSP
+                  uf_docto: SP
+                  nacionalidade: Brasileiro
+                  estado_civil: Solteiro
+                  profissao: Advogado
+                  endereco_pais: Brasil
+                  endereco_cep: "00000-000"
+                  endereco_logradouro: Rua X
+                  endereco_numero: "123"
+                  endereco_complemento: Sala 1
+                  endereco_bairro: Centro
+                  endereco_cidade: Sao Paulo
+                  endereco_uf: SP
+                  genero: MASCULINO
+                  data_nascimento: "01/01/1990"
+                  uf_nascimento: SP
+                  cidade_nascimento: Sao Paulo
+                  nome_mae: Maria
+                  nome_pai: Joao
+                  nit: "123456"
+                  pis: "12345678900"
+                  pasep: "12345678900"
+                  personalidade: Pessoa fisica
+                  nao_possui_rg: "0"
+                  nao_possui_cpf: "0"
+                  citacao_online: 0
+                  nome_orgao_vinculacao: "Tribunal de Justiça de São Paulo"
+                  cnpj_orgao_vinculacao: "12.345.678/0001-90"
+                  email_orgao_vinculacao: "contato@tjsp.jus.br"
+  /api/v1/users:
+    get:
+      tags:
+        - Users
+      summary: Listar usuários cadastrados
+      description: Retorna os membros com todos os campos exigidos no cadastro e na atualização
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Lista de usuários
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    idusuarios:
+                      type: integer
+                    nome:
+                      type: string
+                    email:
+                      type: string
+                      format: email
+                    perfil:
+                      type: string
+                      enum: [operador, administrador]
+                    cpf:
+                      type: string
+                      description: Formato xxx.xxx.xxx-xx (CPF válido)
+                    rg:
+                      type: string
+                    orgao_expedidor:
+                      type: string
+                    data_nascimento:
+                      type: string
+                      description: Formato dd/mm/yyyy
+                    telefone:
+                      type: string
+                    oab:
+                      type: string
+                    uf:
+                      type: string
+              example:
+                - idusuarios: 1
+                  nome: Usuário Exemplo
+                  email: exemplo@teste.com
+                  perfil: operador
+                  cpf: "123.456.789-09"
+                  rg: "12345678"
+                  orgao_expedidor: SSP
+                  data_nascimento: "01/01/1990"
+                  telefone: "(11) 91234-5678"
+                  oab: "123456"
+                  uf: SP
+        "401":
+          description: API key not provided
+
+    post:
+      tags:
+        - Users
+      summary: Criar usuário
+      description: |
+        Cria um novo membro no workspace.
+
+        Observações:
+
+        - A senha deve ser enviada criptografada em MD5.
+        - O e-mail precisa ser válido.
+        - O perfil pode ser `operador` ou `administrador`.
+        - O telefone deve estar no formato `(xx) xxxxx-xxxx`.
+        - O CPF deve seguir o padrão `xxx.xxx.xxx-xx` e ser válido.
+        - A data de nascimento deve estar no formato `dd/mm/yyyy`.
+        - O `orgao_expedidor` deve ser obtido na rota `/api/v1/issuing-agencies`.
+        - A OAB e a UF são opcionais; caso informadas, a OAB deve conter 6 dígitos e a UF possuir 2 letras maiúsculas de um estado válido. Essas informações serão salvas na tabela `usuarios_oabs`.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nome:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                senha:
+                  type: string
+                  description: Senha em MD5
+                perfil:
+                  type: string
+                  description: Tipo de usuário, `operador` ou `administrador`
+                  enum: [operador, administrador]
+                cpf:
+                  type: string
+                  description: Formato xxx.xxx.xxx-xx (CPF válido)
+                rg:
+                  type: string
+                orgao_expedidor:
+                  type: string
+                  description: Código de órgão expedidor da rota `/api/v1/issuing-agencies`
+                data_nascimento:
+                  type: string
+                  description: Formato dd/mm/yyyy
+                telefone:
+                  type: string
+                  description: Formato (xx) xxxxx-xxxx
+                oab:
+                  type: string
+                  description: Número com 6 dígitos
+                uf:
+                  type: string
+                  description: Sigla do estado em 2 letras maiúsculas
+              required:
+                [
+                  nome,
+                  email,
+                  senha,
+                  perfil,
+                  cpf,
+                  rg,
+                  orgao_expedidor,
+                  data_nascimento,
+                  telefone,
+                ]
+      responses:
+        "201":
+          description: Usuário criado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  idusuarios:
+                    type: integer
+        "400":
+          description: Dados inválidos
+        "401":
+          description: API key not provided
+        "404":
+          description: API key not found
+        "500":
+          description: Falha ao criar usuário
+
+    put:
+      tags:
+        - Users
+      summary: Atualizar usuário
+      description: |
+        Atualiza dados do membro.
+
+        - Se a senha for enviada, deve estar em MD5.
+        - O e-mail precisa ser válido.
+        - O perfil pode ser `operador` ou `administrador`.
+        - O telefone deve seguir o formato `(xx) xxxxx-xxxx`.
+        - O CPF deve estar no padrão `xxx.xxx.xxx-xx` e ser válido.
+        - A data de nascimento deve estar no formato `dd/mm/yyyy`.
+        - A OAB e a UF são opcionais; caso informadas, a OAB deve ter 6 dígitos e a UF conter 2 letras maiúsculas válidas.
+        - O `orgao_expedidor` deve ser obtido na rota `/api/v1/issuing-agencies`.
+        - Somente os campos enviados serão alterados.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                idusuarios:
+                  type: integer
+                nome:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                senha:
+                  type: string
+                  description: Senha em MD5
+                perfil:
+                  type: string
+                  description: Tipo de usuário, `operador` ou `administrador`
+                  enum: [operador, administrador]
+                cpf:
+                  type: string
+                  description: Formato xxx.xxx.xxx-xx (CPF válido)
+                rg:
+                  type: string
+                orgao_expedidor:
+                  type: string
+                  description: Código de órgão expedidor da rota `/api/v1/issuing-agencies`
+                data_nascimento:
+                  type: string
+                  description: Formato dd/mm/yyyy
+                telefone:
+                  type: string
+                  description: Formato (xx) xxxxx-xxxx
+                oab:
+                  type: string
+                  description: Número com 6 dígitos (opcional)
+                uf:
+                  type: string
+                  description: Sigla do estado em 2 letras maiúsculas (obrigatória se OAB for enviada)
+              required: [idusuarios]
+      responses:
+        "200":
+          description: Usuário atualizado
+        "400":
+          description: Dados inválidos
+        "401":
+          description: API key not provided
+        "404":
+          description: Usuário ou API key não encontrado
+
+    delete:
+      tags:
+        - Users
+      summary: Remover usuário
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                idusuarios:
+                  type: integer
+              required: [idusuarios]
+      responses:
+        "200":
+          description: Usuário removido
+        "400":
+          description: Dados inválidos
+        "401":
+          description: API key not provided
+        "404":
+          description: Usuário ou API key não encontrado
+
+  /api/v1/docs:
+    get:
+      tags:
+        - Docs Generator
+      summary: Listar documentos do gerador
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Lista de documentos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+              example:
+                - idgerador_documentos: 10
+                  nome: Documento exemplo
+                  hash: "hash_exemplo"
+                  created_at: "2024-01-01 10:00:00"
+        "401":
+          description: API key not provided
+        "404":
+          description: API key not found
+
+    post:
+      tags:
+        - Docs Generator
+      summary: Criar documento do gerador
+      description: |
+        Envia os valores que serão aplicados nos placeholders do modelo.
+        No front (Gerador de Documentos), as variáveis são criadas na configuração do modelo
+        e inseridas no texto com o formato `{{Nome da variavel}}`.
+        Na API, o objeto `variaveis` deve usar exatamente o mesmo nome cadastrado no front.
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                idgerador_documentos_modelos:
+                  type: integer
+                nome:
+                  type: string
+                variaveis:
+                  type: object
+                  description: |
+                    Mapa `nome_da_variavel` -> `valor` com os dados que serão substituídos no documento.
+                    Os nomes devem corresponder às variáveis criadas no front e usadas no modelo.
+                  example:
+                    Nome do cliente: "Maria da Silva"
+                    Numero do processo: "0000000-00.2024.1.00.0000"
+                    Valor da causa: "R$ 10.000,00"
+                    Vara: "2ª Vara Cível"
+              required:
+                - idgerador_documentos_modelos
+      responses:
+        "200":
+          description: Documento criado
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                status: success
+                document_id: 123
+                hash: "hash_exemplo"
+        "400":
+          description: Dados inválidos
+        "401":
+          description: API key not provided
+        "404":
+          description: Modelo não encontrado
+        "500":
+          description: Erro ao criar documento
+
+
+    delete:
+      tags:
+        - Docs Generator
+      summary: Excluir documento do gerador
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: integer
+              required:
+                - id
+      responses:
+        "200":
+          description: Documento excluído
+        "400":
+          description: Dados inválidos
+        "401":
+          description: API key not provided
+        "404":
+          description: Documento não encontrado
+
+
+  /api/v1/docs/download:
+    get:
+      tags:
+        - Docs Generator
+      summary: Baixar documento gerado (PDF ou DOCX)
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+        - in: query
+          name: id
+          required: true
+          description: ID do documento gerado (`idgerador_documentos`)
+          schema:
+            type: integer
+        - in: query
+          name: format
+          required: false
+          description: Formato do arquivo (`pdf` ou `docx`)
+          schema:
+            type: string
+            enum: [pdf, docx]
+            default: pdf
+      responses:
+        "200":
+          description: Arquivo para download
+          content:
+            application/pdf: {}
+            application/vnd.openxmlformats-officedocument.wordprocessingml.document: {}
+        "400":
+          description: Dados inválidos
+        "401":
+          description: API key not provided
+        "404":
+          description: Documento ou API key não encontrado
+        "500":
+          description: Erro ao gerar arquivo
+
+
+  /api/v1/docs/models:
+    get:
+      tags:
+        - Docs Generator
+      summary: Listar modelos do gerador
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Lista de modelos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+              example:
+                - idgerador_documentos_modelos: 1
+                  nome: Modelo base
+                  json_variaveis:
+                    - "Nome do cliente"
+                    - "Numero do processo"
+                  created_at: "2024-01-01 10:00:00"
+        "401":
+          description: API key not provided
+        "404":
+          description: API key not found
+
+    delete:
+      tags:
+        - Docs Generator
+      summary: Excluir modelo do gerador
+      parameters:
+        - in: query
+          name: api_key
+          required: true
+          description: Chave de API do workspace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                idgerador_documentos_modelos:
+                  type: integer
+              required:
+                - idgerador_documentos_modelos
+      responses:
+        "200":
+          description: Modelo excluído
+        "400":
+          description: Dados inválidos
+        "401":
+          description: API key not provided
+        "404":
+          description: Modelo não encontrado

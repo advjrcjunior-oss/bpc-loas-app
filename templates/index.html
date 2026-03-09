@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BPC/LOAS - Gerador de Petições</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <h1>Gerador de Petições BPC/LOAS</h1>
+        <p>Dr. José Roberto da Costa Junior - OAB/SP 378.163</p>
+    </header>
+
+    <div class="container">
+        <a href="/monitoramento" style="display:inline-block; margin-bottom:16px; color:#4472C4; text-decoration:none; font-size:.85rem;">Monitoramento de Processos &rarr;</a>
+
+        <!-- Processamento em Lote -->
+        <div class="card" style="border-left: 4px solid #2E7D32;">
+            <h2>Processamento em Lote</h2>
+            <p style="font-size:0.85rem; color:#666; margin-bottom:12px;">
+                Informe a pasta base e os nomes das pastas dos clientes separados por vírgula.
+            </p>
+            <div class="form-group">
+                <label>Pasta Base</label>
+                <input type="text" id="loteBase" placeholder="Ex: H:\Meu Drive\JUDICIAIS\NOVOS">
+            </div>
+            <div class="form-group">
+                <label>Clientes (separados por vírgula)</label>
+                <textarea id="lotePastas" rows="3" placeholder="MAYCON CAIO NASCIMENTO DA SILVA_LARISSA DO NASCIMENTO, OUTRO CLIENTE_RESPONSAVEL, MAIS UM CLIENTE"></textarea>
+            </div>
+            <button type="button" class="btn-submit" id="btnLote" style="width:auto; padding:10px 32px; background:#2E7D32;" onclick="processarLote()">
+                Processar Todos
+            </button>
+            <div id="loteProgress" style="display:none; margin-top:16px;"></div>
+        </div>
+
+        <hr style="border:none; border-top:1px solid #ddd; margin:24px 0;">
+
+        <!-- Análise de Pasta Individual -->
+        <div class="card" style="border-left: 4px solid #4472C4;">
+            <h2>Importar Dados de Pasta (Individual)</h2>
+            <p style="font-size:0.85rem; color:#666; margin-bottom:12px;">
+                Para analisar uma pasta e preencher o formulário manualmente.
+            </p>
+            <div class="form-row">
+                <div class="form-group" style="flex:1;">
+                    <label>Caminho da Pasta</label>
+                    <input type="text" id="pastaInput" placeholder="Ex: C:\Users\José Roberto\Clientes\João Silva">
+                </div>
+                <div class="form-group" style="flex:0 0 auto; display:flex; align-items:flex-end;">
+                    <button type="button" class="btn-submit" id="btnAnalisar" style="width:auto; padding:8px 24px; margin:0;" onclick="analisarPasta()">
+                        Analisar Documentos
+                    </button>
+                </div>
+            </div>
+            <div id="statusAnalise" style="display:none;"></div>
+        </div>
+
+        <form id="formPeticao">
+
+            <!-- Dados do Cliente -->
+            <div class="card">
+                <h2>Dados do Requerente</h2>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Nome Completo *</label>
+                        <input type="text" name="nome" required placeholder="Nome completo em maiúsculas">
+                    </div>
+                    <div class="form-group">
+                        <label>CPF *</label>
+                        <input type="text" name="cpf" required placeholder="000.000.000-00">
+                    </div>
+                </div>
+                <div class="form-row-3">
+                    <div class="form-group">
+                        <label>Data de Nascimento *</label>
+                        <input type="date" name="data_nascimento" required>
+                    </div>
+                    <div class="form-group">
+                        <label>RG</label>
+                        <input type="text" name="rg" placeholder="00.000.000-0">
+                    </div>
+                    <div class="form-group">
+                        <label>Estado</label>
+                        <select name="estado">
+                            <option value="SP">SP</option>
+                            <option value="AC">AC</option><option value="AL">AL</option>
+                            <option value="AM">AM</option><option value="AP">AP</option>
+                            <option value="BA">BA</option><option value="CE">CE</option>
+                            <option value="DF">DF</option><option value="ES">ES</option>
+                            <option value="GO">GO</option><option value="MA">MA</option>
+                            <option value="MG">MG</option><option value="MS">MS</option>
+                            <option value="MT">MT</option><option value="PA">PA</option>
+                            <option value="PB">PB</option><option value="PE">PE</option>
+                            <option value="PI">PI</option><option value="PR">PR</option>
+                            <option value="RJ">RJ</option><option value="RN">RN</option>
+                            <option value="RO">RO</option><option value="RR">RR</option>
+                            <option value="RS">RS</option><option value="SC">SC</option>
+                            <option value="SE">SE</option><option value="TO">TO</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Endereço Completo</label>
+                        <input type="text" name="endereco" placeholder="Rua, número, bairro">
+                    </div>
+                    <div class="form-group">
+                        <label>Cidade/Comarca *</label>
+                        <input type="text" name="cidade" required placeholder="Cidade">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Representante Legal -->
+            <div class="card">
+                <h2>Representante Legal (se menor/incapaz)</h2>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Nome do Representante</label>
+                        <input type="text" name="representante_nome" placeholder="Deixe em branco se não houver">
+                    </div>
+                    <div class="form-group">
+                        <label>CPF do Representante</label>
+                        <input type="text" name="representante_cpf" placeholder="000.000.000-00">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>RG do Representante</label>
+                        <input type="text" name="representante_rg">
+                    </div>
+                    <div class="form-group">
+                        <label>Parentesco</label>
+                        <select name="representante_parentesco">
+                            <option value="">Selecione...</option>
+                            <option value="mãe">Mãe</option>
+                            <option value="pai">Pai</option>
+                            <option value="avó">Avó/Avô</option>
+                            <option value="tutor">Tutor(a)</option>
+                            <option value="curador">Curador(a)</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Condição de Saúde -->
+            <div class="card">
+                <h2>Condição de Saúde</h2>
+                <div class="form-group">
+                    <label>CID(s) *</label>
+                    <input type="text" name="cids" required placeholder="Ex: F90.0, F84.0 (separar por vírgula)">
+                </div>
+                <div class="form-group">
+                    <label>Descrição da Condição de Saúde *</label>
+                    <textarea name="descricao_saude" required placeholder="Descreva a condição de saúde, diagnósticos, tratamentos em curso, limitações funcionais..."></textarea>
+                </div>
+            </div>
+
+            <!-- Dados do Processo -->
+            <div class="card">
+                <h2>Dados do Processo</h2>
+                <div class="form-row-3">
+                    <div class="form-group">
+                        <label>NB (Número do Benefício) *</label>
+                        <input type="text" name="nb" required placeholder="000.000.000-0">
+                    </div>
+                    <div class="form-group">
+                        <label>DER *</label>
+                        <input type="date" name="der" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Motivo do Indeferimento *</label>
+                        <select name="motivo_indeferimento" required>
+                            <option value="">Selecione...</option>
+                            <option value="Não atende critério de renda per capita">Renda per capita</option>
+                            <option value="Não atende critério de deficiência">Critério de deficiência</option>
+                            <option value="Não comparecimento à perícia">Não comparecimento à perícia</option>
+                            <option value="Documentação insuficiente">Documentação insuficiente</option>
+                            <option value="Outro">Outro</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group" id="motivoOutroGroup" style="display:none">
+                    <label>Especifique o motivo</label>
+                    <input type="text" name="motivo_outro" placeholder="Descreva o motivo do indeferimento">
+                </div>
+            </div>
+
+            <!-- Composição Familiar -->
+            <div class="card">
+                <h2>Composição Familiar</h2>
+                <table class="familia-table">
+                    <thead>
+                        <tr>
+                            <th>Nome</th>
+                            <th>Parentesco</th>
+                            <th>Idade</th>
+                            <th>Renda (R$)</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="familiaBody">
+                        <tr>
+                            <td><input type="text" name="fam_nome_0" placeholder="Nome"></td>
+                            <td><input type="text" name="fam_parentesco_0" placeholder="Ex: mãe"></td>
+                            <td><input type="text" name="fam_idade_0" placeholder="Ex: 35"></td>
+                            <td><input type="text" name="fam_renda_0" placeholder="0,00"></td>
+                            <td><button type="button" class="btn-remove" onclick="removeRow(this)">X</button></td>
+                        </tr>
+                    </tbody>
+                </table>
+                <button type="button" class="btn-add-row" onclick="addFamiliaRow()">+ Adicionar membro</button>
+            </div>
+
+            <!-- Gastos Mensais -->
+            <div class="card">
+                <h2>Gastos Mensais</h2>
+                <table class="gastos-table">
+                    <thead>
+                        <tr>
+                            <th>Categoria</th>
+                            <th>Item</th>
+                            <th>Valor (R$)</th>
+                            <th>Observação</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="gastosBody">
+                        <tr>
+                            <td>
+                                <select name="gasto_cat_0">
+                                    <option value="Moradia">Moradia</option>
+                                    <option value="Alimentação">Alimentação</option>
+                                    <option value="Saúde">Saúde</option>
+                                    <option value="Transporte">Transporte</option>
+                                    <option value="Educação">Educação</option>
+                                    <option value="Vestuário">Vestuário</option>
+                                    <option value="Higiene">Higiene</option>
+                                    <option value="Outro">Outro</option>
+                                </select>
+                            </td>
+                            <td><input type="text" name="gasto_item_0" placeholder="Ex: Aluguel"></td>
+                            <td><input type="text" name="gasto_valor_0" placeholder="0,00"></td>
+                            <td><input type="text" name="gasto_obs_0" placeholder="Art. 20-B LOAS"></td>
+                            <td><button type="button" class="btn-remove" onclick="removeRow(this)">X</button></td>
+                        </tr>
+                    </tbody>
+                </table>
+                <button type="button" class="btn-add-row" onclick="addGastoRow()">+ Adicionar gasto</button>
+            </div>
+
+            <!-- Tipo de Documento -->
+            <div class="card">
+                <h2>Documentos a Gerar</h2>
+                <div class="checkbox-group">
+                    <label>
+                        <input type="checkbox" name="doc_todos" value="todos" checked onchange="toggleDocs(this)">
+                        Todos
+                    </label>
+                    <label>
+                        <input type="checkbox" name="doc_peticao" value="peticao" class="doc-individual">
+                        Petição Inicial
+                    </label>
+                    <label>
+                        <input type="checkbox" name="doc_planilha" value="planilha" class="doc-individual">
+                        Planilha de Cálculo
+                    </label>
+                    <label>
+                        <input type="checkbox" name="doc_quesitos_medicos" value="quesitos_medicos" class="doc-individual">
+                        Quesitos Médicos
+                    </label>
+                    <label>
+                        <input type="checkbox" name="doc_quesitos_sociais" value="quesitos_sociais" class="doc-individual">
+                        Quesitos Sociais
+                    </label>
+                </div>
+            </div>
+
+            <button type="submit" class="btn-submit" id="btnSubmit">Gerar Documentos</button>
+        </form>
+
+        <div id="status"></div>
+    </div>
+
+    <footer>
+        Sistema local de petições BPC/LOAS | Powered by Claude API
+    </footer>
+
+    <script>
+        let familiaCount = 1;
+        let gastoCount = 1;
+
+        async function analisarPasta() {
+            const pasta = document.getElementById('pastaInput').value.trim();
+            if (!pasta) { alert('Informe o caminho da pasta.'); return; }
+
+            const btn = document.getElementById('btnAnalisar');
+            const statusDiv = document.getElementById('statusAnalise');
+            btn.disabled = true;
+            btn.textContent = 'Analisando...';
+            statusDiv.style.display = 'block';
+            statusDiv.innerHTML = '<div class="status-loading"><div class="spinner"></div><p>Analisando documentos da pasta via Claude Vision...<br>Isso pode levar alguns minutos dependendo da quantidade de arquivos.</p></div>';
+
+            try {
+                const response = await fetch('/api/analisar-pasta', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pasta: pasta })
+                });
+                const result = await response.json();
+
+                if (response.ok) {
+                    preencherFormulario(result.data);
+                    const arquivos = result.arquivos_analisados.join(', ');
+                    statusDiv.innerHTML = `<div class="status-success"><h3>${result.message}</h3><p style="font-size:0.85rem;color:#555;">Arquivos: ${arquivos}</p><p style="font-size:0.85rem;color:#555;margin-top:8px;">Confira os dados abaixo e ajuste se necessário antes de gerar.</p></div>`;
+                } else {
+                    statusDiv.innerHTML = `<div class="status-error"><strong>Erro:</strong> ${result.error}</div>`;
+                }
+            } catch (err) {
+                statusDiv.innerHTML = `<div class="status-error"><strong>Erro de conexão:</strong> ${err.message}</div>`;
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'Analisar Documentos';
+        }
+
+        function preencherFormulario(data) {
+            const form = document.getElementById('formPeticao');
+
+            // Simple fields
+            const simpleFields = ['nome', 'cpf', 'data_nascimento', 'rg', 'endereco', 'cidade', 'estado',
+                'representante_nome', 'representante_cpf', 'representante_rg', 'representante_parentesco',
+                'cids', 'descricao_saude', 'nb', 'der'];
+
+            simpleFields.forEach(field => {
+                const el = form.querySelector(`[name="${field}"]`);
+                if (el && data[field]) {
+                    el.value = data[field];
+                }
+            });
+
+            // Motivo indeferimento
+            if (data.motivo_indeferimento) {
+                const select = form.querySelector('[name="motivo_indeferimento"]');
+                const options = Array.from(select.options).map(o => o.value);
+                if (options.includes(data.motivo_indeferimento)) {
+                    select.value = data.motivo_indeferimento;
+                } else {
+                    select.value = 'Outro';
+                    document.getElementById('motivoOutroGroup').style.display = 'block';
+                    form.querySelector('[name="motivo_outro"]').value = data.motivo_indeferimento;
+                }
+            }
+
+            // Família
+            if (data.familia && data.familia.length > 0) {
+                const tbody = document.getElementById('familiaBody');
+                tbody.innerHTML = '';
+                familiaCount = 0;
+                data.familia.forEach((m, i) => {
+                    familiaCount = i + 1;
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td><input type="text" name="fam_nome_${i}" value="${esc(m.nome || '')}"></td>
+                        <td><input type="text" name="fam_parentesco_${i}" value="${esc(m.parentesco || '')}"></td>
+                        <td><input type="text" name="fam_idade_${i}" value="${esc(m.idade || '')}"></td>
+                        <td><input type="text" name="fam_renda_${i}" value="${esc(m.renda || '0,00')}"></td>
+                        <td><button type="button" class="btn-remove" onclick="removeRow(this)">X</button></td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            }
+
+            // Gastos
+            if (data.gastos && data.gastos.length > 0) {
+                const tbody = document.getElementById('gastosBody');
+                tbody.innerHTML = '';
+                gastoCount = 0;
+                data.gastos.forEach((g, i) => {
+                    gastoCount = i + 1;
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>
+                            <select name="gasto_cat_${i}">
+                                ${['Moradia','Alimentação','Saúde','Transporte','Educação','Vestuário','Higiene','Outro']
+                                    .map(c => `<option value="${c}" ${c === g.categoria ? 'selected' : ''}>${c}</option>`).join('')}
+                            </select>
+                        </td>
+                        <td><input type="text" name="gasto_item_${i}" value="${esc(g.item || '')}"></td>
+                        <td><input type="text" name="gasto_valor_${i}" value="${esc(g.valor || '0,00')}"></td>
+                        <td><input type="text" name="gasto_obs_${i}" value="${esc(g.observacao || '')}"></td>
+                        <td><button type="button" class="btn-remove" onclick="removeRow(this)">X</button></td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            }
+
+            // Scroll to form
+            form.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function esc(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML.replace(/"/g, '&quot;');
+        }
+
+        function addFamiliaRow() {
+            const i = familiaCount++;
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><input type="text" name="fam_nome_${i}" placeholder="Nome"></td>
+                <td><input type="text" name="fam_parentesco_${i}" placeholder="Ex: pai"></td>
+                <td><input type="text" name="fam_idade_${i}" placeholder="Ex: 40"></td>
+                <td><input type="text" name="fam_renda_${i}" placeholder="0,00"></td>
+                <td><button type="button" class="btn-remove" onclick="removeRow(this)">X</button></td>
+            `;
+            document.getElementById('familiaBody').appendChild(row);
+        }
+
+        function addGastoRow() {
+            const i = gastoCount++;
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>
+                    <select name="gasto_cat_${i}">
+                        <option value="Moradia">Moradia</option>
+                        <option value="Alimentação">Alimentação</option>
+                        <option value="Saúde">Saúde</option>
+                        <option value="Transporte">Transporte</option>
+                        <option value="Educação">Educação</option>
+                        <option value="Vestuário">Vestuário</option>
+                        <option value="Higiene">Higiene</option>
+                        <option value="Outro">Outro</option>
+                    </select>
+                </td>
+                <td><input type="text" name="gasto_item_${i}" placeholder="Ex: Medicação"></td>
+                <td><input type="text" name="gasto_valor_${i}" placeholder="0,00"></td>
+                <td><input type="text" name="gasto_obs_${i}" placeholder=""></td>
+                <td><button type="button" class="btn-remove" onclick="removeRow(this)">X</button></td>
+            `;
+            document.getElementById('gastosBody').appendChild(row);
+        }
+
+        function removeRow(btn) {
+            const tbody = btn.closest('tbody');
+            if (tbody.children.length > 1) {
+                btn.closest('tr').remove();
+            }
+        }
+
+        function toggleDocs(checkbox) {
+            const individuals = document.querySelectorAll('.doc-individual');
+            if (checkbox.checked) {
+                individuals.forEach(cb => { cb.checked = false; cb.disabled = true; });
+            } else {
+                individuals.forEach(cb => { cb.disabled = false; });
+            }
+        }
+
+        // Initialize: disable individual checkboxes since "todos" is checked
+        document.querySelectorAll('.doc-individual').forEach(cb => { cb.disabled = true; });
+
+        // Motivo "Outro"
+        document.querySelector('[name="motivo_indeferimento"]').addEventListener('change', function() {
+            document.getElementById('motivoOutroGroup').style.display = this.value === 'Outro' ? 'block' : 'none';
+        });
+
+        // Form submit
+        document.getElementById('formPeticao').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const btn = document.getElementById('btnSubmit');
+            const statusDiv = document.getElementById('status');
+            btn.disabled = true;
+            btn.textContent = 'Gerando...';
+
+            statusDiv.style.display = 'block';
+            statusDiv.innerHTML = '<div class="status-loading"><div class="spinner"></div><p>Gerando documentos via Claude API...<br>Isso pode levar até 2 minutos.</p></div>';
+
+            // Collect form data
+            const formData = collectFormData();
+
+            try {
+                const response = await fetch('/api/gerar', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(formData)
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    let html = '<div class="status-success"><h3>Documentos gerados com sucesso!</h3><ul class="download-list">';
+                    for (const file of result.files) {
+                        html += `<li><a href="/api/download/${encodeURIComponent(file)}" download>&#128196; ${file}</a></li>`;
+                    }
+                    html += '</ul></div>';
+                    statusDiv.innerHTML = html;
+                } else {
+                    statusDiv.innerHTML = `<div class="status-error"><strong>Erro:</strong> ${result.error}</div>`;
+                }
+            } catch (err) {
+                statusDiv.innerHTML = `<div class="status-error"><strong>Erro de conexão:</strong> ${err.message}</div>`;
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'Gerar Documentos';
+        });
+
+        // === PROCESSAMENTO EM LOTE ===
+        function processarLote() {
+            const base = document.getElementById('loteBase').value.trim();
+            const clientesRaw = document.getElementById('lotePastas').value.trim();
+            if (!base || !clientesRaw) {
+                alert('Informe a pasta base e pelo menos um cliente.');
+                return;
+            }
+            const clientes = clientesRaw.split(',').map(c => c.trim()).filter(c => c.length > 0);
+            const pastas = clientes.map(c => base.replace(/[\\\/]$/, '') + '\\' + c);
+            if (pastas.length === 0) {
+                alert('Informe pelo menos um cliente.');
+                return;
+            }
+
+            const btn = document.getElementById('btnLote');
+            const progressDiv = document.getElementById('loteProgress');
+            btn.disabled = true;
+            btn.textContent = 'Processando...';
+            progressDiv.style.display = 'block';
+            progressDiv.innerHTML = '<div class="status-loading"><div class="spinner"></div><p>Iniciando processamento de ' + pastas.length + ' pasta(s)...</p></div>';
+
+            // Build progress cards for each client
+            let html = '<div id="loteCards">';
+            pastas.forEach((p, i) => {
+                const nome = p.split('\\').pop().split('/').pop().split('_')[0].trim();
+                html += `<div id="loteCard${i}" class="lote-card lote-pending">
+                    <div class="lote-card-header">
+                        <span class="lote-num">${i+1}/${pastas.length}</span>
+                        <strong>${esc(nome)}</strong>
+                        <span class="lote-status" id="loteStatus${i}">Aguardando...</span>
+                    </div>
+                    <div class="lote-card-detail" id="loteDetail${i}"></div>
+                </div>`;
+            });
+            html += '</div>';
+            progressDiv.innerHTML = html;
+
+            // Start SSE
+            fetch('/api/lote', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pastas: pastas })
+            }).then(response => {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                function read() {
+                    reader.read().then(({ done, value }) => {
+                        if (done) {
+                            btn.disabled = false;
+                            btn.textContent = 'Processar Todos';
+                            return;
+                        }
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop(); // keep incomplete line
+
+                        lines.forEach(line => {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const evt = JSON.parse(line.slice(6));
+                                    handleLoteEvent(evt);
+                                } catch(e) {}
+                            }
+                        });
+                        read();
+                    });
+                }
+                read();
+            }).catch(err => {
+                progressDiv.innerHTML += `<div class="status-error">Erro de conexao: ${err.message}</div>`;
+                btn.disabled = false;
+                btn.textContent = 'Processar Todos';
+            });
+        }
+
+        function handleLoteEvent(evt) {
+            const idx = evt.index;
+            if (evt.type === 'progress') {
+                const card = document.getElementById('loteCard' + idx);
+                const status = document.getElementById('loteStatus' + idx);
+                const detail = document.getElementById('loteDetail' + idx);
+                if (card) card.className = 'lote-card lote-active';
+                if (status) {
+                    if (evt.step === 'analisando') {
+                        status.textContent = 'Analisando documentos...';
+                        status.style.color = '#1565C0';
+                    } else if (evt.step === 'gerando') {
+                        status.textContent = 'Gerando documentos...';
+                        status.style.color = '#E65100';
+                    } else if (evt.step === 'organizando') {
+                        status.textContent = 'Organizando pasta...';
+                        status.style.color = '#6A1B9A';
+                    }
+                }
+            } else if (evt.type === 'done') {
+                const card = document.getElementById('loteCard' + idx);
+                const status = document.getElementById('loteStatus' + idx);
+                const detail = document.getElementById('loteDetail' + idx);
+                if (card) card.className = 'lote-card lote-done';
+                if (status) {
+                    status.textContent = 'Concluido!';
+                    status.style.color = '#2E7D32';
+                }
+                if (detail && evt.files) {
+                    detail.innerHTML = '<small>Arquivos: ' + evt.files.join(', ') + '</small>';
+                }
+            } else if (evt.type === 'error') {
+                const card = document.getElementById('loteCard' + (idx !== undefined ? idx : ''));
+                const status = document.getElementById('loteStatus' + (idx !== undefined ? idx : ''));
+                const detail = document.getElementById('loteDetail' + (idx !== undefined ? idx : ''));
+                if (card) card.className = 'lote-card lote-error';
+                if (status) {
+                    status.textContent = 'Erro';
+                    status.style.color = '#C62828';
+                }
+                if (detail) detail.innerHTML = '<small style="color:#C62828;">' + esc(evt.message) + '</small>';
+            } else if (evt.type === 'complete') {
+                const total = evt.results ? evt.results.length : 0;
+                const ok = evt.results ? evt.results.filter(r => r.files && r.files.length > 0).length : 0;
+                const progressDiv = document.getElementById('loteProgress');
+                progressDiv.innerHTML += `<div class="status-success" style="margin-top:16px;">
+                    <h3>Processamento concluido!</h3>
+                    <p>${ok} de ${total} cliente(s) processado(s) com sucesso. Documentos salvos nas pastas dos clientes.</p>
+                </div>`;
+                const btn = document.getElementById('btnLote');
+                btn.disabled = false;
+                btn.textContent = 'Processar Todos';
+            }
+        }
+
+        function collectFormData() {
+            const form = document.getElementById('formPeticao');
+            const data = {};
+
+            // Simple fields
+            ['nome', 'cpf', 'data_nascimento', 'rg', 'endereco', 'cidade', 'estado',
+             'representante_nome', 'representante_cpf', 'representante_rg', 'representante_parentesco',
+             'cids', 'descricao_saude', 'nb', 'der'].forEach(field => {
+                const el = form.querySelector(`[name="${field}"]`);
+                if (el) data[field] = el.value;
+            });
+
+            // Motivo indeferimento
+            const motivo = form.querySelector('[name="motivo_indeferimento"]').value;
+            data.motivo_indeferimento = motivo === 'Outro'
+                ? form.querySelector('[name="motivo_outro"]').value
+                : motivo;
+
+            // Documentos
+            const docTodos = form.querySelector('[name="doc_todos"]').checked;
+            if (docTodos) {
+                data.documentos = ['todos'];
+            } else {
+                data.documentos = [];
+                form.querySelectorAll('.doc-individual:checked').forEach(cb => {
+                    data.documentos.push(cb.value);
+                });
+                if (data.documentos.length === 0) data.documentos = ['todos'];
+            }
+
+            // Família
+            data.familia = [];
+            const famRows = document.getElementById('familiaBody').querySelectorAll('tr');
+            famRows.forEach((row, i) => {
+                const nome = row.querySelector(`[name^="fam_nome"]`)?.value;
+                if (nome) {
+                    data.familia.push({
+                        nome: nome,
+                        parentesco: row.querySelector(`[name^="fam_parentesco"]`)?.value || '',
+                        idade: row.querySelector(`[name^="fam_idade"]`)?.value || '',
+                        renda: row.querySelector(`[name^="fam_renda"]`)?.value || '0,00'
+                    });
+                }
+            });
+
+            // Gastos
+            data.gastos = [];
+            const gastoRows = document.getElementById('gastosBody').querySelectorAll('tr');
+            gastoRows.forEach((row, i) => {
+                const item = row.querySelector(`[name^="gasto_item"]`)?.value;
+                if (item) {
+                    data.gastos.push({
+                        categoria: row.querySelector(`[name^="gasto_cat"]`)?.value || '',
+                        item: item,
+                        valor: row.querySelector(`[name^="gasto_valor"]`)?.value || '0,00',
+                        observacao: row.querySelector(`[name^="gasto_obs"]`)?.value || ''
+                    });
+                }
+            });
+
+            return data;
+        }
+    </script>
+</body>
+</html>

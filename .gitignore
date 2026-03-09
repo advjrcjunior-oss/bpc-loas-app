@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+output/
+*.json
+!legalmail_openapi.yaml
+timbrado.docx
+run_fix_brayan.py
+run_fix_esthefany.py
+run_legalmail_batch.py
+test_analysis.py
+test_yasmin.py
+yasmin_movimentacoes.txt
+yasmin_peticao.txt

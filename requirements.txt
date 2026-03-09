@@ -1,0 +1,8 @@
+flask
+anthropic
+pymupdf
+pillow
+openpyxl
+python-dateutil
+requests
+gunicorn
