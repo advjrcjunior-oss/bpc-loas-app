@@ -12,6 +12,12 @@ if os.path.exists(env_path):
                 if k not in os.environ:
                     os.environ[k] = v.strip()
 
+# Clean API key (remove leading = or spaces from Railway env)
+api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+if api_key and not api_key.startswith("sk-"):
+    cleaned = api_key.lstrip(" =")
+    os.environ["ANTHROPIC_API_KEY"] = cleaned
+
 import re
 import json
 import glob
