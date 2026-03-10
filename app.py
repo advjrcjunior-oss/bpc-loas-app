@@ -564,8 +564,9 @@ REGRAS CRITICAS:
                 with client.messages.stream(
                     model="claude-sonnet-4-20250514",
                     max_tokens=16000,
-                    system=skill_prompt,
+                    system=[{"type": "text", "text": skill_prompt, "cache_control": {"type": "ephemeral"}}],
                     messages=[{"role": "user", "content": msg}],
+                    extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
                 ) as stream:
                     for text in stream.text_stream:
                         response_text += text
@@ -2114,7 +2115,7 @@ PROCESSES_CACHE_FILE = os.path.join(BASE_DIR, "processes_cache.json")
 MONITOR_STATE_FILE = os.path.join(BASE_DIR, "monitor_state.json")
 
 # Monitor settings
-MONITOR_INTERVAL_MINUTES = 30  # Check every 30 min (safe, well under rate limits)
+MONITOR_INTERVAL_MINUTES = 1440  # Check once per day (24h = 1440 min)
 _monitor_thread = None
 _monitor_running = False
 
@@ -2239,7 +2240,7 @@ JSON:
 {{"resumo": "resumo breve", "tipo_movimentacao": "intimação|despacho|sentença|decisão|citação|outro", "prazo_dias": 0, "data_prazo": null, "urgencia": "alta|media|baixa", "acao_necessaria": "o que o advogado precisa fazer", "tipo_peticao_sugerida": "manifestação|recurso|contestação|cumprimento|embargos|nenhuma|outro", "observacoes": "obs relevantes"}}"""
 
         response = client_ai.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-haiku-4-5-20251001",
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -2325,6 +2326,15 @@ def monitor_check_updates():
         else:
             # Subsequent runs: find truly new movements
             new_movements = [m for m in autos if str(m.get("idmovimentacoes", "")) not in known_ids]
+
+            # Filter: only movements from yesterday or today
+            yesterday = (_dt.datetime.now() - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
+            today = _dt.datetime.now().strftime("%Y-%m-%d")
+            new_movements = [m for m in new_movements
+                             if (m.get("data_movimentacao", "") or "")[:10] >= yesterday]
+
+            # Sort by date (most recent last)
+            new_movements.sort(key=lambda m: m.get("data_movimentacao", "") or "")
 
             if new_movements:
                 print(f"  [MONITOR] {len(new_movements)} nova(s) movimentacao(oes) em {numero}")
@@ -2707,6 +2717,11 @@ def legalmail_listar_notificacoes():
     only_pending = request.args.get("pending", "false").lower() == "true"
     if only_pending:
         notifications = [n for n in notifications if not n.get("analyzed")]
+    # Sort by date (most recent first)
+    notifications.sort(
+        key=lambda n: n.get("data_movimentacao") or n.get("timestamp") or "",
+        reverse=True
+    )
     return jsonify(notifications)
 
 
@@ -2795,7 +2810,7 @@ Responda APENAS com um JSON válido no seguinte formato:
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-haiku-4-5-20251001",
             max_tokens=1500,
             messages=[{"role": "user", "content": analysis_prompt}]
         )
@@ -3040,7 +3055,7 @@ JSON formato:
 {{"resumo": "...", "tipo_movimentacao": "...", "prazo_dias": 0, "data_prazo": null, "urgencia": "alta|media|baixa", "acao_necessaria": "...", "tipo_peticao_sugerida": "...", "observacoes": "..."}}"""
 
             response = client_ai.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=1500,
                 messages=[{"role": "user", "content": analysis_prompt}]
             )
