@@ -3692,11 +3692,17 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
 
 
 _webhook_log = []  # Store last 20 webhook payloads for debugging
+_bot_debug_log = []  # Store last 20 bot processing logs
 
 @app.route("/api/whatsapp/webhook-log")
 def whatsapp_webhook_log():
     """View last received webhook payloads for debugging."""
     return jsonify(_webhook_log)
+
+@app.route("/api/whatsapp/debug-log")
+def whatsapp_debug_log():
+    """View last bot processing logs for debugging."""
+    return jsonify(_bot_debug_log)
 
 @app.route("/api/whatsapp/webhook", methods=["POST"])
 def whatsapp_webhook():
@@ -3783,14 +3789,23 @@ def whatsapp_webhook():
 
         # Process in background thread to not block webhook response
         def _process():
+            import datetime as _dtproc
+            log_entry = {"ts": str(_dtproc.datetime.now()), "phone": phone, "msg": message[:100]}
             try:
                 resposta = whatsapp_processar_mensagem(phone, message)
+                log_entry["resposta"] = resposta[:200] if resposta else "(vazio)"
                 if resposta:
                     sid = _whatsapp_sessions.get(phone, {}).get("conversapp_session_id") or session_id
-                    whatsapp_send_message(phone, resposta, session_id=sid)
+                    log_entry["session_id"] = sid
+                    result = whatsapp_send_message(phone, resposta, session_id=sid)
+                    log_entry["enviado"] = result
             except Exception as e:
+                log_entry["erro"] = str(e)
                 print(f"[WHATSAPP] Erro: {e}")
                 traceback.print_exc()
+            _bot_debug_log.append(log_entry)
+            if len(_bot_debug_log) > 20:
+                _bot_debug_log.pop(0)
 
         threading.Thread(target=_process, daemon=True).start()
     else:
