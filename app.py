@@ -2109,10 +2109,12 @@ import time
 import threading
 import datetime as _dt
 
-# Persistent storage files
-NOTIFICATIONS_FILE = os.path.join(BASE_DIR, "notifications.json")
-PROCESSES_CACHE_FILE = os.path.join(BASE_DIR, "processes_cache.json")
-MONITOR_STATE_FILE = os.path.join(BASE_DIR, "monitor_state.json")
+# Persistent storage - use /data volume on Railway, local dir otherwise
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
+os.makedirs(DATA_DIR, exist_ok=True)
+NOTIFICATIONS_FILE = os.path.join(DATA_DIR, "notifications.json")
+PROCESSES_CACHE_FILE = os.path.join(DATA_DIR, "processes_cache.json")
+MONITOR_STATE_FILE = os.path.join(DATA_DIR, "monitor_state.json")
 
 # Monitor settings
 MONITOR_INTERVAL_MINUTES = 1440  # Check once per day (24h = 1440 min)
