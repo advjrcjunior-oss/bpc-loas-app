@@ -3691,6 +3691,13 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
         return f"{_get_saudacao()}! 😊 Desculpe, estou com uma dificuldade técnica no momento. Por favor, tente novamente em alguns minutos ou entre em contato diretamente com o escritório."
 
 
+_webhook_log = []  # Store last 20 webhook payloads for debugging
+
+@app.route("/api/whatsapp/webhook-log")
+def whatsapp_webhook_log():
+    """View last received webhook payloads for debugging."""
+    return jsonify(_webhook_log)
+
 @app.route("/api/whatsapp/webhook", methods=["POST"])
 def whatsapp_webhook():
     """Webhook receiver for ConversApp events.
@@ -3701,11 +3708,17 @@ def whatsapp_webhook():
     Event: MESSAGE_RECEIVED
     """
     data = request.get_json() or {}
+    # Store for debug
+    import datetime as _dtlog
+    _webhook_log.append({"ts": str(_dtlog.datetime.now()), "data": data})
+    if len(_webhook_log) > 20:
+        _webhook_log.pop(0)
 
     event_type = data.get("event") or data.get("type") or ""
 
-    # Log the raw webhook for debugging (first 500 chars)
-    print(f"[WHATSAPP] Webhook: event={event_type}, keys={list(data.keys())}")
+    # Log the raw webhook for debugging
+    import json as _json
+    print(f"[WHATSAPP] Webhook RAW: {_json.dumps(data, ensure_ascii=False, default=str)[:2000]}")
 
     # Only process MESSAGE_RECEIVED events
     if event_type not in ("MESSAGE_RECEIVED", "message.received", ""):
