@@ -3834,7 +3834,24 @@ def whatsapp_processar_mensagem(phone, message):
     # If client previously asked about processo and is now giving name/CPF
     aguardando_id = session.get("aguardando_identificacao", False)
 
-    if aguardando_id or is_cpf:
+    # Check if message looks like a person's name (not a keyword/answer)
+    palavras_nao_nome = {
+        "inss", "sim", "não", "nao", "ok", "benefício", "beneficio", "benefício",
+        "trabalhista", "processo", "andamento", "loas", "bpc", "aposentadoria",
+        "filho", "filha", "mãe", "mae", "pai", "marido", "esposa", "meu", "minha",
+        "oi", "olá", "ola", "bom dia", "boa tarde", "boa noite", "obrigado", "obrigada",
+        "é", "e", "do", "da", "de", "o", "a", "um", "uma", "pra", "para", "no", "na",
+        "como", "está", "esta", "tá", "ta", "quero", "preciso", "saber", "ver",
+        "judicial", "administrativo", "outro", "outra", "tipo", "qual",
+    }
+    msg_parece_nome = not is_cpf and msg_lower not in palavras_nao_nome and len(msg.strip()) > 2
+    # Also check: if ALL words are non-name keywords, it's not a name
+    if msg_parece_nome:
+        palavras_msg = set(msg_lower.split())
+        if palavras_msg and palavras_msg.issubset(palavras_nao_nome):
+            msg_parece_nome = False
+
+    if aguardando_id and (is_cpf or msg_parece_nome):
         # Try to find process
         if is_cpf:
             processos = whatsapp_buscar_processo(cpf=msg)
@@ -3937,7 +3954,11 @@ PROCESSO DO CLIENTE (já identificado):
     # If client wants to check process but hasn't identified yet
     if wants_processo and not processo and not processo_info:
         session["aguardando_identificacao"] = True
-        processo_info = "\nO CLIENTE QUER CONSULTAR O PROCESSO - siga o PASSO 2 (triagem): pergunte se é benefício do INSS ou outro tipo de processo, depois peça o nome completo conforme o fluxo."
+        processo_info = "\nO CLIENTE QUER CONSULTAR O PROCESSO. Se ele já indicou que é benefício, INSS, do filho, etc, NÃO pergunte novamente - vá direto pedir o nome completo. Só faça a triagem se realmente não ficou claro."
+    # If aguardando_id but message wasn't a name (was a keyword like "inss", "benefício")
+    elif aguardando_id and not processo_info and not msg_parece_nome and not is_cpf:
+        session["aguardando_identificacao"] = True
+        processo_info = "\nO CLIENTE ESTÁ EM TRIAGEM. Ele respondeu algo sobre o tipo de processo/benefício. Agora peça o nome completo de quem tem o processo, por gentileza."
 
     # If we found process/gmail data, send "vou consultar" first, then results
     dados_encontrados = "PROCESSO ENCONTRADO" in processo_info or "ANDAMENTO ADMINISTRATIVO" in processo_info
