@@ -2791,6 +2791,16 @@ def legalmail_listar_notificacoes():
     return jsonify(notifications)
 
 
+@app.route("/api/legalmail/notificacoes/importar", methods=["POST"])
+def legalmail_importar_notificacoes():
+    """Import notifications from JSON array (replaces existing)."""
+    data = request.get_json()
+    if not isinstance(data, list):
+        return jsonify({"error": "Esperado um array JSON"}), 400
+    _save_notifications(data)
+    return jsonify({"status": "ok", "imported": len(data)})
+
+
 @app.route("/api/legalmail/notificacoes/limpar", methods=["POST"])
 def legalmail_limpar_notificacoes():
     """Remove notifications older than 5 days from storage."""
