@@ -3821,13 +3821,27 @@ def _build_resultado_msg(session, processo_info):
         if not traducao:
             traducao = f"O status atual no INSS é: {gmail_info.get('status_inss', 'não identificado')}."
 
-        msg = f"Encontrei o andamento do benefício!\n\n"
-        msg += f"Protocolo: {protocolo}\n"
-        if "ASSISTENCIAL" in servico.upper() or "BPC" in servico.upper():
-            msg += f"Serviço: Benefício Assistencial (BPC/LOAS)\n"
+        # Friendly service name
+        servico_upper = servico.upper()
+        if "ASSISTENCIAL" in servico_upper or "BPC" in servico_upper or "DEFICI" in servico_upper:
+            servico_friendly = "Benefício Assistencial (BPC/LOAS)"
+        elif "APOSENTADORIA" in servico_upper:
+            servico_friendly = "Aposentadoria"
+        elif "AUXÍLIO" in servico_upper or "AUXILIO" in servico_upper:
+            servico_friendly = "Auxílio por Incapacidade"
         elif servico:
-            msg += f"Serviço: {servico}\n"
-        msg += f"\n{traducao}\n\n"
+            servico_friendly = servico.title()
+        else:
+            servico_friendly = ""
+
+        nome = gmail_info.get("nome_cliente", "")
+        msg = f"Encontrei as informações do {nome}!\n\n"
+        msg += f"📋 *Andamento administrativo - INSS*\n\n"
+        msg += f"📌 *Protocolo:* {protocolo}\n"
+        if servico_friendly:
+            msg += f"📎 *Tipo:* {servico_friendly}\n"
+        msg += f"📊 *Status:* {gmail_info.get('status_inss', '-')}\n\n"
+        msg += f"{traducao}\n\n"
         msg += "Ficou alguma dúvida ou posso te ajudar com mais alguma coisa?"
         return msg
 
@@ -3837,7 +3851,6 @@ def _build_resultado_msg(session, processo_info):
         numero = proc.get("numero_processo", "")
         tribunal = proc.get("tribunal", "")
         cliente = proc.get("poloativo_nome", "")
-        status = proc.get("inbox_atual", "Em andamento")
 
         # Get last movement and translate
         movs = whatsapp_get_movimentacoes(proc.get("idprocessos"))
@@ -3851,12 +3864,13 @@ def _build_resultado_msg(session, processo_info):
             traducao_mov = _traduzir_movimentacao(ultima_mov)
 
         msg = "Encontrei o seu processo!\n\n"
-        msg += f"Processo nº: {numero}\n"
-        msg += f"Tribunal: {tribunal}\n"
+        msg += f"📋 *Andamento do processo*\n\n"
+        msg += f"⚖️ *Processo nº:* {numero}\n"
+        msg += f"🏛️ *Tribunal:* {tribunal}\n"
         if ultima_data:
-            msg += f"Última movimentação: {ultima_data}\n"
+            msg += f"📅 *Última movimentação:* {ultima_data}\n"
         if traducao_mov:
-            msg += f"\n{traducao_mov}\n"
+            msg += f"✅ *O que aconteceu:* {traducao_mov}\n"
         msg += "\nFicou alguma dúvida ou posso te ajudar com mais alguma coisa?"
         return msg
 
