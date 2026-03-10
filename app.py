@@ -3766,6 +3766,104 @@ def whatsapp_buscar_gmail_inss(nome_cliente):
 
 
 
+# Traduções de movimentações judiciais para linguagem simples
+_TRADUCOES_MOV = {
+    "petição inicial distribuída": "Seu processo foi aberto e registrado no sistema da Justiça Federal.",
+    "designada audiência": "Foi marcada uma audiência. Em breve o escritório vai te contatar com mais detalhes.",
+    "perícia médica agendada": "A Justiça marcou uma perícia médica. O escritório vai te avisar a data assim que confirmar.",
+    "sentença prolatada": "O juiz já deu a decisão no seu processo. O escritório está analisando e vai te informar o resultado.",
+    "sentença": "O juiz já deu a decisão no seu processo. O escritório está analisando e vai te informar o resultado.",
+    "trânsito em julgado": "O processo foi finalizado com decisão definitiva. O escritório vai entrar em contato para explicar os próximos passos.",
+    "apelação interposta": "Seu processo está na fase de recurso e aguarda julgamento pelos desembargadores. Essa etapa pode levar alguns meses, mas o escritório está acompanhando.",
+    "remetido ao tribunal": "Seu processo está na fase de recurso e aguarda julgamento pelos desembargadores. Essa etapa pode levar alguns meses, mas o escritório está acompanhando.",
+    "concluso ao relator": "Seu processo está na fase de recurso e aguarda julgamento pelos desembargadores. Essa etapa pode levar alguns meses, mas o escritório está acompanhando.",
+    "incluído em pauta": "Seu processo está na fase de recurso e aguarda julgamento pelos desembargadores. Essa etapa pode levar alguns meses, mas o escritório está acompanhando.",
+    "acórdão publicado": "Seu processo está na fase de recurso e aguarda julgamento pelos desembargadores. Essa etapa pode levar alguns meses, mas o escritório está acompanhando.",
+}
+
+# Traduções de status INSS
+_TRADUCOES_INSS = {
+    "exigência": "O INSS pediu alguns documentos adicionais. O escritório já está cuidando disso.",
+    "em análise": "O INSS está analisando o pedido. Assim que tiver alguma novidade, te informamos.",
+    "deferido": "O benefício foi aprovado pelo INSS! O escritório vai te contatar com os próximos passos.",
+    "indeferido": "Infelizmente o INSS negou o pedido, mas não se preocupe. O escritório vai analisar e te orientar sobre os próximos passos.",
+    "concluído": "O processo no INSS foi concluído. O escritório vai te explicar os detalhes.",
+    "cumprida": "A exigência foi cumprida e o processo segue em andamento no INSS.",
+    "cancelado": None,  # Escalar para equipe
+}
+
+
+def _traduzir_movimentacao(titulo):
+    """Traduz movimentação judicial para linguagem simples."""
+    titulo_lower = titulo.lower()
+    for chave, traducao in _TRADUCOES_MOV.items():
+        if chave in titulo_lower:
+            return traducao
+    return titulo  # Sem tradução, retorna original
+
+
+def _build_resultado_msg(session, processo_info):
+    """Build results message directly in code (no AI call needed)."""
+
+    # Gmail/INSS administrative result
+    gmail_info = session.get("gmail_resultado")
+    if gmail_info and "ANDAMENTO ADMINISTRATIVO" in processo_info:
+        status = (gmail_info.get("status_inss") or "não identificado").lower()
+        protocolo = gmail_info.get("protocolo", "não identificado")
+        servico = gmail_info.get("servico", "")
+
+        # Check if cancelled - escalate to team
+        if status == "cancelado" or "cancelado" in status:
+            return ("Encontrei informações sobre o benefício, mas esse assunto a equipe do escritório "
+                    "consegue te ajudar melhor. Vou avisar eles para entrar em contato com você.")
+
+        traducao = _TRADUCOES_INSS.get(status)
+        if not traducao:
+            traducao = f"O status atual no INSS é: {gmail_info.get('status_inss', 'não identificado')}."
+
+        msg = f"Encontrei o andamento do benefício!\n\n"
+        msg += f"Protocolo: {protocolo}\n"
+        if "ASSISTENCIAL" in servico.upper() or "BPC" in servico.upper():
+            msg += f"Serviço: Benefício Assistencial (BPC/LOAS)\n"
+        elif servico:
+            msg += f"Serviço: {servico}\n"
+        msg += f"\n{traducao}\n\n"
+        msg += "Ficou alguma dúvida ou posso te ajudar com mais alguma coisa?"
+        return msg
+
+    # Judicial process result
+    proc = session.get("processo")
+    if proc and "PROCESSO ENCONTRADO" in processo_info:
+        numero = proc.get("numero_processo", "")
+        tribunal = proc.get("tribunal", "")
+        cliente = proc.get("poloativo_nome", "")
+        status = proc.get("inbox_atual", "Em andamento")
+
+        # Get last movement and translate
+        movs = whatsapp_get_movimentacoes(proc.get("idprocessos"))
+        ultima_mov = ""
+        ultima_data = ""
+        traducao_mov = ""
+        if movs:
+            m = movs[0]
+            ultima_data = (m.get("data_movimentacao") or "")[:10]
+            ultima_mov = m.get("titulo") or m.get("titulo_movimentacao", "")
+            traducao_mov = _traduzir_movimentacao(ultima_mov)
+
+        msg = "Encontrei o seu processo!\n\n"
+        msg += f"Processo nº: {numero}\n"
+        msg += f"Tribunal: {tribunal}\n"
+        if ultima_data:
+            msg += f"Última movimentação: {ultima_data}\n"
+        if traducao_mov:
+            msg += f"\n{traducao_mov}\n"
+        msg += "\nFicou alguma dúvida ou posso te ajudar com mais alguma coisa?"
+        return msg
+
+    # Fallback
+    return "Não consegui localizar as informações no momento. Vou encaminhar para a equipe do escritório verificar. Eles vão entrar em contato com você."
+
+
 def _get_saudacao():
     """Return greeting based on current Brazil time."""
     from datetime import datetime, timedelta, timezone
@@ -3969,29 +4067,23 @@ PROCESSO DO CLIENTE (já identificado):
         session["aguardando_identificacao"] = True
         processo_info = "\nO CLIENTE ESTÁ EM TRIAGEM. Ele respondeu algo sobre o tipo de processo/benefício. Agora peça o nome completo de quem tem o processo, por gentileza."
 
-    # If we found process/gmail data, send "vou consultar" first, then results
+    # If we found process/gmail data, build results message directly (no AI needed)
     dados_encontrados = "PROCESSO ENCONTRADO" in processo_info or "ANDAMENTO ADMINISTRATIVO" in processo_info
 
-    # Build conversation for Claude
-    saudacao = _get_saudacao()
-
     if dados_encontrados:
-        # First, send a "consulting" message
         msg_consulta = "Obrigada! Vou consultar agora o andamento. Um momento."
         historico.append({"role": "assistant", "content": msg_consulta})
+
+        # Build results message directly in code (100% reliable, no AI call)
+        msg_resultado = _build_resultado_msg(session, processo_info)
+        historico.append({"role": "assistant", "content": msg_resultado})
         session["historico"] = historico
-        session["_mensagem_consulta"] = msg_consulta
+        _whatsapp_sessions[phone] = session
+        return [msg_consulta, msg_resultado]
 
-        # Now generate the results message
-        system_msg = f"""{BOT_SYSTEM_PROMPT}
-
-HORÁRIO ATUAL: {saudacao}
-{processo_info}
-
-INSTRUÇÃO OBRIGATÓRIA: Os dados do processo/andamento estão acima. Apresente-os ao cliente usando o formato apropriado (PASSO 4 para judicial, traduções do andamento administrativo para INSS). Traduza movimentações para linguagem simples. Depois pergunte: "Ficou alguma dúvida ou posso te ajudar com mais alguma coisa?"
-"""
-    else:
-        system_msg = f"""{BOT_SYSTEM_PROMPT}
+    # No data found - use Claude for conversation (triagem, saudação, etc.)
+    saudacao = _get_saudacao()
+    system_msg = f"""{BOT_SYSTEM_PROMPT}
 
 HORÁRIO ATUAL: {saudacao} (usar esta saudação se for a primeira mensagem)
 PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
@@ -4025,23 +4117,10 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
 
         session["historico"] = historico
         _whatsapp_sessions[phone] = session
-
-        if dados_encontrados:
-            # Return list: [consulta msg, results msg]
-            return [session.pop("_mensagem_consulta", ""), resposta]
-
         return resposta
     except Exception as e:
         print(f"[WHATSAPP] Erro IA: {e}")
         traceback.print_exc()
-        # If we had data but Claude failed, still try to send basic info
-        if dados_encontrados and processo_info:
-            gmail_info = session.get("gmail_resultado")
-            if gmail_info:
-                return [
-                    session.pop("_mensagem_consulta", "Vou consultar, um momento."),
-                    f"Encontrei o andamento do benefício:\n\nProtocolo: {gmail_info.get('protocolo', '-')}\nStatus: {gmail_info.get('status_inss', '-')}\nData: {gmail_info.get('data_email', '-')}\n\nQualquer dúvida pode me chamar!"
-                ]
         return f"{_get_saudacao()}! Desculpe, estou com uma dificuldade técnica no momento. Por favor, tente novamente em alguns minutos ou entre em contato diretamente com o escritório."
 
 
