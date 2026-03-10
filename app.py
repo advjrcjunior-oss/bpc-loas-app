@@ -4254,7 +4254,24 @@ def whatsapp_status():
         "helena_channel": CONVERSAPP_CHANNEL_ID or "(não configurado)",
         "active_sessions": len(_whatsapp_sessions),
         "webhook_url": "/api/whatsapp/webhook",
+        "gmail_configured": bool(GMAIL_REFRESH_TOKEN and GMAIL_CLIENT_ID),
     })
+
+
+@app.route("/api/whatsapp/test-gmail")
+def whatsapp_test_gmail():
+    """Test Gmail search for a name."""
+    nome = request.args.get("nome", "")
+    if not nome:
+        return jsonify({"error": "Informe ?nome=..."}), 400
+    try:
+        result = whatsapp_buscar_gmail_inss(nome)
+        if result:
+            # Remove corpo longo para facilitar leitura
+            result["corpo"] = result.get("corpo", "")[:300]
+        return jsonify({"found": bool(result), "result": result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/whatsapp/setup-webhook", methods=["POST"])
