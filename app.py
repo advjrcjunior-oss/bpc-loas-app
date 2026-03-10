@@ -3714,58 +3714,63 @@ def whatsapp_webhook():
     if len(_webhook_log) > 20:
         _webhook_log.pop(0)
 
-    event_type = data.get("event") or data.get("type") or ""
-
     # Log the raw webhook for debugging
     import json as _json
     print(f"[WHATSAPP] Webhook RAW: {_json.dumps(data, ensure_ascii=False, default=str)[:2000]}")
+
+    # ConversApp real payload format:
+    # { "data": { "eventType": "MESSAGE_RECEIVED", "content": { "text": "...", "direction": "FROM_HUB",
+    #   "sessionId": "...", "details": { "from": "+55...", "to": "+55..." } } } }
+    inner = data.get("data") or {}
+    if isinstance(inner, list) and inner:
+        inner = inner[0]
+
+    # Event type: inner.eventType or top-level event
+    event_type = inner.get("eventType") or data.get("event") or data.get("type") or ""
 
     # Only process MESSAGE_RECEIVED events
     if event_type not in ("MESSAGE_RECEIVED", "message.received", ""):
         return jsonify({"status": "ok", "action": f"skipped_{event_type}"})
 
-    # Extract data - Helena/WTS nests under "data"
-    msg_data = data.get("data") or data
-    if isinstance(msg_data, list) and msg_data:
-        msg_data = msg_data[0]
+    # Content is nested inside inner.content
+    content = inner.get("content") or inner
+    if isinstance(content, list) and content:
+        content = content[0]
+    details = content.get("details") or {} if isinstance(content, dict) else {}
 
-    # Filter by channel - ONLY respond on our pós-venda channel
-    channel_id = (msg_data.get("channelId")
-                  or (msg_data.get("channel", {}).get("id") if isinstance(msg_data.get("channel"), dict) else "")
-                  or data.get("channelId")
-                  or "")
-    if CONVERSAPP_CHANNEL_ID and channel_id and channel_id != CONVERSAPP_CHANNEL_ID:
-        print(f"[WHATSAPP] Ignorando msg de outro canal: {channel_id}")
-        return jsonify({"status": "ok", "action": "wrong_channel"})
-
-    # Skip outgoing messages
-    direction = msg_data.get("direction") or ""
-    from_me = msg_data.get("fromMe")
-    if direction.upper() in ("OUTBOUND", "OUT", "SENT") or from_me in (True, "true"):
+    # Skip outgoing messages (FROM_HUB = incoming from client, TO_HUB = outgoing)
+    direction = content.get("direction") or inner.get("direction") or ""
+    from_me = content.get("fromMe") or inner.get("fromMe")
+    if direction.upper() in ("TO_HUB", "OUTBOUND", "OUT", "SENT") or from_me in (True, "true"):
         return jsonify({"status": "ok", "action": "skipped_outbound"})
 
-    # Extract phone number
+    # Extract phone number from details.from or fallbacks
     phone = ""
-    contact = msg_data.get("contact") or msg_data.get("contactDetails") or {}
-    if isinstance(contact, dict):
-        phone = contact.get("phonenumber") or contact.get("phone") or contact.get("number") or ""
+    if isinstance(details, dict):
+        phone = details.get("from") or ""
     if not phone:
-        phone = msg_data.get("from") or msg_data.get("number") or msg_data.get("phone") or ""
+        contact = content.get("contact") or inner.get("contact") or inner.get("contactDetails") or {}
+        if isinstance(contact, dict):
+            phone = contact.get("phonenumber") or contact.get("phone") or contact.get("number") or ""
+    if not phone:
+        phone = content.get("from") or inner.get("from") or inner.get("number") or ""
     phone = re.sub(r'[^\d+]', '', str(phone)).lstrip('+')
 
     # Extract message text
-    message = (msg_data.get("text")
-               or msg_data.get("body")
-               or (msg_data.get("content", {}).get("text") if isinstance(msg_data.get("content"), dict) else "")
-               or "")
-    if not message and isinstance(msg_data.get("content"), str):
-        message = msg_data["content"]
+    message = ""
+    if isinstance(content, dict):
+        message = content.get("text") or content.get("body") or ""
+    if not message:
+        message = inner.get("text") or inner.get("body") or ""
+    if not message and isinstance(content, str):
+        message = content
 
     # Extract session ID for replying
-    session_id = (msg_data.get("sessionId")
-                  or (msg_data.get("session", {}).get("id") if isinstance(msg_data.get("session"), dict) else None)
-                  or data.get("sessionId")
-                  or None)
+    session_id = None
+    if isinstance(content, dict):
+        session_id = content.get("sessionId")
+    if not session_id:
+        session_id = inner.get("sessionId") or data.get("sessionId")
 
     if phone and message:
         print(f"[WHATSAPP] De {phone}: {message[:100]}")
