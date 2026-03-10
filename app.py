@@ -3673,16 +3673,18 @@ def whatsapp_buscar_gmail_inss(nome_cliente):
 
         nome_busca = nome_cliente.strip()
 
-        # Try full name first, then individual words if not found
+        # Try full name first, then progressively shorter combinations
+        # NEVER search single words alone (privacy risk - could match wrong client)
         tentativas = [nome_busca]
         palavras = [p for p in nome_busca.split() if len(p) > 2]
         if palavras and len(palavras) < len(nome_busca.split()):
-            # Some short words were removed, try without them
             tentativas.append(" ".join(palavras))
-        # Add individual words (first name, last name, etc.)
-        for p in palavras:
-            if p not in [t.lower() for t in tentativas]:
-                tentativas.append(p)
+        # Try first + second name (minimum 2 words for privacy)
+        if len(palavras) >= 2:
+            tentativas.append(f"{palavras[0]} {palavras[1]}")
+            # Try first + last
+            if len(palavras) >= 3:
+                tentativas.append(f"{palavras[0]} {palavras[-1]}")
 
         messages = []
         query_used = ""
@@ -4112,6 +4114,7 @@ PROCESSO ENCONTRADO:
         else:
             processo_info = "\nNENHUM PROCESSO ENCONTRADO nem no sistema judicial nem nos e-mails do INSS. Peça para tentar novamente com o nome completo como está no processo ou encaminhe para a equipe."
             session["aguardando_identificacao"] = False
+            session.pop("contexto_inss", None)
 
     # If already has a process in session, include it
     elif processo and not processo_info:
@@ -4203,11 +4206,17 @@ _bot_debug_log = []  # Store last 20 bot processing logs
 @app.route("/api/whatsapp/webhook-log")
 def whatsapp_webhook_log():
     """View last received webhook payloads for debugging."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
     return jsonify(_webhook_log)
 
 @app.route("/api/whatsapp/debug-log")
 def whatsapp_debug_log():
     """View last bot processing logs for debugging."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
     return jsonify(_bot_debug_log)
 
 @app.route("/api/whatsapp/webhook", methods=["POST"])
@@ -4245,7 +4254,7 @@ def whatsapp_webhook():
     event_type = inner.get("eventType") or data.get("event") or data.get("type") or ""
 
     # Only process MESSAGE_RECEIVED events
-    if event_type not in ("MESSAGE_RECEIVED", "message.received", ""):
+    if event_type and event_type not in ("MESSAGE_RECEIVED", "message.received"):
         return jsonify({"status": "ok", "action": f"skipped_{event_type}"})
 
     # Content
@@ -4391,6 +4400,19 @@ def whatsapp_webhook():
                 _bot_debug_log.pop(0)
 
         threading.Thread(target=_process, daemon=True).start()
+    elif phone and not message:
+        # Client sent image/audio/document without text - acknowledge
+        print(f"[WHATSAPP] Mídia sem texto de {phone}")
+        sid = None
+        if isinstance(content, dict):
+            sid = content.get("sessionId")
+        if not sid:
+            sid = inner.get("sessionId") or data.get("sessionId")
+        if sid:
+            try:
+                whatsapp_send_message(phone, "Recebi sua mensagem! Se precisar de algo, pode me escrever por texto que te ajudo.", session_id=sid)
+            except Exception:
+                pass
     else:
         print(f"[WHATSAPP] Sem texto processável. phone={phone}, content_type={type(content).__name__}")
 
@@ -4425,6 +4447,9 @@ def whatsapp_status():
 @app.route("/api/whatsapp/test-gmail")
 def whatsapp_test_gmail():
     """Test Gmail search for a name."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
     nome = request.args.get("nome", "")
     if not nome:
         return jsonify({"error": "Informe ?nome=..."}), 400
