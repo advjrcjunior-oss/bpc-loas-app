@@ -3554,17 +3554,37 @@ def whatsapp_buscar_processo(nome=None, cpf=None):
                 encontrados.append(p)
     if not encontrados and nome:
         nome_lower = nome.lower().strip()
-        # Try partial match (first name or full name) - only match non-empty polo
+        palavras = [p for p in nome_lower.split() if len(p) > 2]  # ignore "de", "da", etc.
+
+        # 1) Try full name match (substring in either direction)
         for p in todos:
             polo = (p.get("poloativo_nome") or "").lower()
             if polo and nome_lower and (nome_lower in polo or polo in nome_lower):
                 encontrados.append(p)
-        # If too many, try stricter match (exact or first word match)
-        if len(encontrados) > 5:
-            primeiro_nome = nome_lower.split()[0] if nome_lower else ""
+
+        # 2) If nothing found, try matching ANY word from the name
+        if not encontrados and palavras:
+            for p in todos:
+                polo = (p.get("poloativo_nome") or "").lower()
+                if polo and any(palavra in polo for palavra in palavras):
+                    encontrados.append(p)
+
+        # If too many, try to narrow down by matching MORE words
+        if len(encontrados) > 5 and len(palavras) > 1:
+            # Score by how many words match
+            scored = []
+            for p in encontrados:
+                polo = (p.get("poloativo_nome") or "").lower()
+                score = sum(1 for palavra in palavras if palavra in polo)
+                scored.append((score, p))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            best_score = scored[0][0]
+            encontrados = [p for s, p in scored if s == best_score]
+        elif len(encontrados) > 5:
+            # Single word - try startswith match
+            primeiro_nome = palavras[0] if palavras else nome_lower
             strict = [p for p in encontrados
-                      if nome_lower == (p.get("poloativo_nome") or "").lower()
-                      or (primeiro_nome and (p.get("poloativo_nome") or "").lower().startswith(primeiro_nome))]
+                      if (p.get("poloativo_nome") or "").lower().startswith(primeiro_nome)]
             if strict:
                 encontrados = strict
 
@@ -3650,15 +3670,33 @@ def whatsapp_buscar_gmail_inss(nome_cliente):
             return None
 
         nome_busca = nome_cliente.strip()
-        query = f'from:noreply@inss.gov.br "{nome_busca}"'
 
-        results = service.users().messages().list(
-            userId='me', q=query, maxResults=5
-        ).execute()
+        # Try full name first, then individual words if not found
+        tentativas = [nome_busca]
+        palavras = [p for p in nome_busca.split() if len(p) > 2]
+        if palavras and len(palavras) < len(nome_busca.split()):
+            # Some short words were removed, try without them
+            tentativas.append(" ".join(palavras))
+        # Add individual words (first name, last name, etc.)
+        for p in palavras:
+            if p not in [t.lower() for t in tentativas]:
+                tentativas.append(p)
 
-        messages = results.get('messages', [])
+        messages = []
+        query_used = ""
+        for tentativa in tentativas:
+            query = f'from:noreply@inss.gov.br "{tentativa}"'
+            results = service.users().messages().list(
+                userId='me', q=query, maxResults=5
+            ).execute()
+            messages = results.get('messages', [])
+            if messages:
+                query_used = tentativa
+                print(f"[GMAIL] Encontrado com busca '{tentativa}'")
+                break
+
         if not messages:
-            print(f"[GMAIL] Nenhum e-mail do INSS para '{nome_busca}'")
+            print(f"[GMAIL] Nenhum e-mail do INSS para '{nome_busca}' (tentou: {tentativas})")
             return None
 
         # Get most recent email
