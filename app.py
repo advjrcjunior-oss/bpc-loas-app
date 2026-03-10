@@ -3717,7 +3717,7 @@ def whatsapp_webhook():
 
     # Filter by channel - ONLY respond on our pós-venda channel
     channel_id = (msg_data.get("channelId")
-                  or msg_data.get("channel", {}).get("id") if isinstance(msg_data.get("channel"), dict) else ""
+                  or (msg_data.get("channel", {}).get("id") if isinstance(msg_data.get("channel"), dict) else "")
                   or data.get("channelId")
                   or "")
     if CONVERSAPP_CHANNEL_ID and channel_id and channel_id != CONVERSAPP_CHANNEL_ID:
@@ -3742,7 +3742,7 @@ def whatsapp_webhook():
     # Extract message text
     message = (msg_data.get("text")
                or msg_data.get("body")
-               or msg_data.get("content", {}).get("text") if isinstance(msg_data.get("content"), dict) else ""
+               or (msg_data.get("content", {}).get("text") if isinstance(msg_data.get("content"), dict) else "")
                or "")
     if not message and isinstance(msg_data.get("content"), str):
         message = msg_data["content"]
