@@ -2729,7 +2729,8 @@ def legalmail_listar_notificacoes():
 def legalmail_analisar_intimacao():
     """Analyze an intimation using Claude AI.
 
-    Body: { "index": 0 }  (index in notifications list)
+    Body: { "index": 0 }  (index in notifications list - legacy)
+    or: { "timestamp": "..." }  (find by timestamp - preferred)
     or: { "texto": "...", "numero_processo": "..." }  (direct text)
     """
     data = request.get_json()
@@ -2738,12 +2739,27 @@ def legalmail_analisar_intimacao():
     texto_intimacao = ""
     numero_processo = ""
     notif_index = data.get("index")
+    notif_timestamp = data.get("timestamp")
 
-    if notif_index is not None:
+    # Find notification by timestamp (preferred) or index (legacy)
+    notif = None
+    notifications = None
+    if notif_timestamp:
+        notifications = _load_notifications()
+        for i, n in enumerate(notifications):
+            if n.get("timestamp") == notif_timestamp:
+                notif = n
+                notif_index = i
+                break
+        if notif is None:
+            return jsonify({"error": "Notificação não encontrada"}), 400
+    elif notif_index is not None:
         notifications = _load_notifications()
         if notif_index < 0 or notif_index >= len(notifications):
             return jsonify({"error": "Índice inválido"}), 400
         notif = notifications[notif_index]
+
+    if notif:
         numero_processo = notif.get("numero_processo", "")
         # Check if monitor already extracted text
         if notif.get("texto_movimentacao"):

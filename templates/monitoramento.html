@@ -391,7 +391,7 @@ async function loadNotifications() {
                         <span><strong>Polo Ativo:</strong> ${n.polo_ativo || '-'}</span>
                         <span><strong>Classe:</strong> ${n.classe || '-'}</span>
                     </div>
-                    ${!isAnalyzed ? `<button class="btn-sm btn-orange" style="margin-top:8px;" onclick="analyzeSingle(${i})">Analisar</button>` : ''}
+                    ${!isAnalyzed ? `<button class="btn-sm btn-orange" style="margin-top:8px;" onclick="analyzeSingle('${n.timestamp || i}')">Analisar</button>` : ''}
                     ${analysisHtml}
                     ${petitionBtn}
                 </div>`;
@@ -411,7 +411,7 @@ function updateStats(notifications) {
     document.getElementById('statUrgent').textContent = urgentCount;
 }
 
-async function analyzeSingle(index) {
+async function analyzeSingle(timestamp) {
     const btn = event.target;
     btn.disabled = true;
     btn.innerHTML = '<span class="loading-inline"></span> Analisando...';
@@ -419,7 +419,7 @@ async function analyzeSingle(index) {
         await api('/api/legalmail/notificacao/analisar', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({index})
+            body: JSON.stringify({timestamp})
         });
         loadNotifications();
     } catch(e) {
