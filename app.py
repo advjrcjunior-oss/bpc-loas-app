@@ -3893,16 +3893,34 @@ PROCESSO DO CLIENTE (já identificado):
         session["aguardando_identificacao"] = True
         processo_info = "\nO CLIENTE QUER CONSULTAR O PROCESSO - siga o PASSO 2 (triagem): pergunte se é benefício do INSS ou outro tipo de processo, depois peça o nome completo conforme o fluxo."
 
+    # If we found process/gmail data, send "vou consultar" first, then results
+    dados_encontrados = "PROCESSO ENCONTRADO" in processo_info or "ANDAMENTO ADMINISTRATIVO" in processo_info
+
     # Build conversation for Claude
     saudacao = _get_saudacao()
-    system_msg = f"""{BOT_SYSTEM_PROMPT}
+
+    if dados_encontrados:
+        # First, send a "consulting" message
+        msg_consulta = "Obrigada! Vou consultar agora o andamento. Um momento."
+        historico.append({"role": "assistant", "content": msg_consulta})
+        session["historico"] = historico
+        session["_mensagem_consulta"] = msg_consulta
+
+        # Now generate the results message
+        system_msg = f"""{BOT_SYSTEM_PROMPT}
+
+HORÁRIO ATUAL: {saudacao}
+{processo_info}
+
+INSTRUÇÃO OBRIGATÓRIA: Os dados do processo/andamento estão acima. Apresente-os ao cliente usando o formato apropriado (PASSO 4 para judicial, traduções do andamento administrativo para INSS). Traduza movimentações para linguagem simples. Depois pergunte: "Ficou alguma dúvida ou posso te ajudar com mais alguma coisa?"
+"""
+    else:
+        system_msg = f"""{BOT_SYSTEM_PROMPT}
 
 HORÁRIO ATUAL: {saudacao} (usar esta saudação se for a primeira mensagem)
 PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
 {processo_info}
-{"O CLIENTE QUER CONSULTAR O PROCESSO - siga o PASSO 2 (triagem) do fluxo." if session.get("aguardando_identificacao") else ""}
-
-INSTRUÇÃO OBRIGATÓRIA: Se houver PROCESSO ENCONTRADO ou ANDAMENTO ADMINISTRATIVO ENCONTRADO acima, você DEVE apresentar os dados AGORA nesta resposta. Use o formato do PASSO 4 ou PASSO 5 conforme o caso. NÃO diga "vou consultar" ou "um momento" - os dados JÁ ESTÃO AQUI, apresente-os diretamente. Depois pergunte se ficou alguma dúvida.
+{"O CLIENTE QUER CONSULTAR O PROCESSO. Se ele já indicou que é benefício, INSS, do filho, etc, NÃO pergunte novamente - vá direto pedir o nome completo. Só faça a triagem se realmente não ficou claro." if session.get("aguardando_identificacao") else ""}
 """
 
     # Build messages for Claude (with history for context)
@@ -3924,6 +3942,10 @@ INSTRUÇÃO OBRIGATÓRIA: Se houver PROCESSO ENCONTRADO ou ANDAMENTO ADMINISTRAT
         historico.append({"role": "assistant", "content": resposta})
         session["historico"] = historico
         _whatsapp_sessions[phone] = session
+
+        if dados_encontrados:
+            # Return list: [consulta msg, results msg]
+            return [session.pop("_mensagem_consulta", ""), resposta]
 
         return resposta
     except Exception as e:
@@ -4058,15 +4080,50 @@ def whatsapp_webhook():
 
                 # Generate AI response
                 resposta = whatsapp_processar_mensagem(phone, message)
-                log_entry["resposta"] = resposta[:200] if resposta else "(vazio)"
+                import time as _time
 
-                if resposta:
-                    # Delay to seem human (30s minus AI processing time)
-                    import time as _time
+                # Handle two-message response (list: [consulta_msg, results_msg])
+                if isinstance(resposta, list) and len(resposta) == 2:
+                    consulta_msg, results_msg = resposta
+                    log_entry["resposta"] = f"[2msgs] {consulta_msg[:80]} | {results_msg[:120]}"
+
+                    if consulta_msg:
+                        # Send "vou consultar" with normal 30s delay first
+                        elapsed = (_dtproc.datetime.now() - _dtproc.datetime.fromisoformat(log_entry["ts"])).total_seconds()
+                        delay = max(0, 30 - elapsed)
+                        if delay > 0:
+                            for _ in range(int(delay // 5)):
+                                if sid:
+                                    try:
+                                        conversapp_request("post", f"/chat/v1/session/{sid}/typing", json={})
+                                    except Exception:
+                                        pass
+                                _time.sleep(5)
+                            remaining = delay % 5
+                            if remaining > 0:
+                                _time.sleep(remaining)
+                        whatsapp_send_message(phone, consulta_msg, session_id=sid)
+
+                    if results_msg:
+                        # Wait 20-30s before sending results (simulate looking up)
+                        for _ in range(5):
+                            if sid:
+                                try:
+                                    conversapp_request("post", f"/chat/v1/session/{sid}/typing", json={})
+                                except Exception:
+                                    pass
+                            _time.sleep(5)
+                        result = whatsapp_send_message(phone, results_msg, session_id=sid)
+                        log_entry["enviado"] = result
+
+                    log_entry["session_id"] = sid
+
+                elif resposta:
+                    log_entry["resposta"] = resposta[:200] if isinstance(resposta, str) else str(resposta)[:200]
+                    # Single message - normal 30s delay
                     elapsed = (_dtproc.datetime.now() - _dtproc.datetime.fromisoformat(log_entry["ts"])).total_seconds()
                     delay = max(0, 30 - elapsed)
                     if delay > 0:
-                        # Keep sending typing indicator during delay
                         for _ in range(int(delay // 5)):
                             if sid:
                                 try:
