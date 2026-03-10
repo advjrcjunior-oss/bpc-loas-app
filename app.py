@@ -2227,17 +2227,16 @@ def monitor_analyze_movement(numero_processo, tribunal, titulo, texto):
     """Use Claude to analyze a movement/intimation."""
     try:
         client_ai = anthropic.Anthropic()
-        prompt = f"""Analise esta movimentação processual e responda APENAS com JSON válido:
+        prompt = f"""Você é um assistente jurídico. Analise esta movimentação processual:
 
-Processo: {numero_processo}
-Tribunal: {tribunal}
-Título da movimentação: {titulo}
+Processo: {numero_processo} | Tribunal: {tribunal}
+Título: {titulo}
 
 TEXTO:
 {texto[:6000]}
 
-JSON:
-{{"resumo": "resumo breve", "tipo_movimentacao": "intimação|despacho|sentença|decisão|citação|outro", "prazo_dias": 0, "data_prazo": null, "urgencia": "alta|media|baixa", "acao_necessaria": "o que o advogado precisa fazer", "tipo_peticao_sugerida": "manifestação|recurso|contestação|cumprimento|embargos|nenhuma|outro", "observacoes": "obs relevantes"}}"""
+Responda APENAS com JSON válido:
+{{"resumo": "resumo claro e objetivo (2-3 frases)", "tipo_movimentacao": "intimação|despacho|sentença|decisão|citação|audiência|perícia|expediente|outro", "prazo_dias": 0, "data_prazo": null, "urgencia": "alta|media|baixa", "acao_necessaria": "ação específica do advogado", "tipo_peticao_sugerida": "contestação|recurso|apelação|agravo|manifestação|cumprimento|embargos|impugnação|outro|nenhuma", "resultado_merito": null, "observacoes": "pontos relevantes"}}"""
 
         response = client_ai.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -2369,21 +2368,12 @@ def monitor_check_updates():
                         "analysis": None,
                     }
 
-                    # Try to get document text for analysis
-                    if state.get("auto_analyze", True):
-                        time.sleep(2)
-                        texto = monitor_fetch_movement_text(mov_id)
-                        if texto:
-                            notif["texto_movimentacao"] = texto[:8000]
-                            # Auto-analyze with Claude
-                            analysis = monitor_analyze_movement(numero, tribunal, titulo, texto)
-                            if analysis:
-                                notif["analyzed"] = True
-                                notif["analysis"] = analysis
-                                urgencia = analysis.get("urgencia", "baixa")
-                                acao = analysis.get("acao_necessaria", "")
-                                print(f"    -> [{urgencia.upper()}] {titulo[:60]}")
-                                print(f"       Acao: {acao[:100]}")
+                    # Fetch movement text (for manual analysis later) but do NOT auto-analyze
+                    time.sleep(2)
+                    texto = monitor_fetch_movement_text(mov_id)
+                    if texto:
+                        notif["texto_movimentacao"] = texto[:8000]
+                    print(f"    -> {titulo[:80]}")
 
                     notifications.append(notif)
                     new_count += 1
@@ -2717,12 +2707,29 @@ def legalmail_listar_notificacoes():
     only_pending = request.args.get("pending", "false").lower() == "true"
     if only_pending:
         notifications = [n for n in notifications if not n.get("analyzed")]
+    # Filter: only last 5 days
+    cutoff = (_dt.datetime.now() - _dt.timedelta(days=5)).strftime("%Y-%m-%d")
+    notifications = [n for n in notifications
+                     if (n.get("data_movimentacao") or n.get("timestamp") or "")[:10] >= cutoff]
     # Sort by date (most recent first)
     notifications.sort(
         key=lambda n: n.get("data_movimentacao") or n.get("timestamp") or "",
         reverse=True
     )
     return jsonify(notifications)
+
+
+@app.route("/api/legalmail/notificacoes/limpar", methods=["POST"])
+def legalmail_limpar_notificacoes():
+    """Remove notifications older than 5 days from storage."""
+    notifications = _load_notifications()
+    total_before = len(notifications)
+    cutoff = (_dt.datetime.now() - _dt.timedelta(days=5)).strftime("%Y-%m-%d")
+    notifications = [n for n in notifications
+                     if (n.get("data_movimentacao") or n.get("timestamp") or "")[:10] >= cutoff]
+    _save_notifications(notifications)
+    removed = total_before - len(notifications)
+    return jsonify({"status": "ok", "removed": removed, "remaining": len(notifications)})
 
 
 @app.route("/api/legalmail/notificacao/analisar", methods=["POST"])
@@ -2805,23 +2812,31 @@ def legalmail_analisar_intimacao():
 
     # Use Claude to analyze
     client = anthropic.Anthropic()
-    analysis_prompt = f"""Analise a seguinte intimação/movimentação processual e responda em JSON:
+    analysis_prompt = f"""Você é um assistente jurídico experiente.
 
-Número do processo: {numero_processo}
+Analise a movimentação processual abaixo com atenção a:
+- Há PRAZO para o advogado? (intimação, contestação, recurso, cumprimento, etc.)
+- Calcule a data limite do prazo considerando dias úteis quando aplicável
+- Urgência real: sentença/decisão de mérito = alta, intimação com prazo = alta, mero expediente = baixa
+- Indique de forma CLARA e DIRETA o que o advogado precisa fazer
+- Se for sentença: indique se foi procedente, improcedente ou parcialmente procedente
 
-TEXTO DA INTIMAÇÃO:
+Processo: {numero_processo}
+
+TEXTO:
 {texto_intimacao[:8000]}
 
-Responda APENAS com um JSON válido no seguinte formato:
+Responda APENAS com JSON válido:
 {{
-    "resumo": "Resumo breve do que aconteceu",
-    "tipo_movimentacao": "intimação|despacho|sentença|decisão|citação|outro",
-    "prazo_dias": número de dias do prazo (0 se não há prazo),
-    "data_prazo": "AAAA-MM-DD" ou null se não há prazo,
+    "resumo": "Resumo claro e objetivo do que aconteceu (2-3 frases)",
+    "tipo_movimentacao": "intimação|despacho|sentença|decisão|citação|audiência|perícia|expediente|outro",
+    "prazo_dias": número de dias do prazo (0 se não há),
+    "data_prazo": "AAAA-MM-DD" ou null,
     "urgencia": "alta|media|baixa",
-    "acao_necessaria": "Descrição clara do que o advogado precisa fazer",
-    "tipo_peticao_sugerida": "contestação|recurso|manifestação|cumprimento|embargos|impugnação|outro|nenhuma",
-    "observacoes": "Observações adicionais relevantes"
+    "acao_necessaria": "Ação específica que o advogado deve tomar (ex: 'Interpor recurso em 15 dias úteis' ou 'Nenhuma ação necessária, apenas ciência')",
+    "tipo_peticao_sugerida": "contestação|recurso|apelação|agravo|manifestação|cumprimento|embargos|impugnação|outro|nenhuma",
+    "resultado_merito": "procedente|improcedente|parcialmente_procedente|null (se não for sentença/decisão de mérito)",
+    "observacoes": "Pontos relevantes para o advogado"
 }}"""
 
     try:
