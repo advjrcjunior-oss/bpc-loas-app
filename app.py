@@ -173,8 +173,9 @@ REGRAS DO CODIGO (CRITICAS - seguir rigorosamente):
 - Para nomes em negrito no meio do texto, SEMPRE usar bp_r() com run(): bp_r(run("NOME", bold=True) + run(" resto do texto"))
 - NUNCA passar XML como string de texto para bp() - usar bp_r() com multiplos run()
 - Datas SEMPRE em portugues: usar data_extenso() para data atual
-- PLANILHA: usar SM 2026 = 1621.00 para parcelas vincendas e valor da causa. Para parcelas vencidas, usar o SM do ano correspondente.
+- PLANILHA: gerar com 3 abas (Resumo, Calculo Detalhado, Criterios). A aba "Calculo Detalhado" deve ter CADA PARCELA em uma linha separada (mes a mes). Usar SM 2026 = 1621.00 para parcelas vincendas e valor da causa. Para parcelas vencidas, usar o SM do ano correspondente (2024=1412.00, 2025=1518.00, 2026=1621.00). Formatacao profissional: cabecalhos azul escuro (#1F3864 texto branco), zebrado nas linhas, bordas finas, totais em amarelo (#FFF2CC). Configurar page_setup landscape e margens estreitas.
 - PETICAO: valor da causa = (meses_vencidos * SM_do_ano) + (12 * 1621.00). Usar SM 2026 = R$ 1.621,00.
+- PETICAO: o CEP DEVE aparecer na qualificacao das partes, formato "CEP XXXXX-XXX". Nunca omitir o CEP.
 - NUNCA usar f-strings aninhadas com aspas iguais. Exemplo ERRADO: f"{f'algo'}". Usar variaveis intermediarias.
 - Testar que todas as variaveis existem antes de usar em f-strings
 - TERMINOLOGIA: usar "autor" (masculino) ou "autora" (feminino) em vez de "requerente". NUNCA usar "requerente".
@@ -783,7 +784,8 @@ Com base em TODOS os documentos acima, extraia e retorne APENAS um JSON valido (
   "cpf": "000.000.000-00",
   "rg": "",
   "data_nascimento": "YYYY-MM-DD",
-  "endereco": "endereco completo com rua, numero, bairro, CEP",
+  "endereco": "endereco completo com rua, numero, bairro",
+  "cep": "XXXXX-XXX (extrair do comprovante de residencia ou autodeclaracao)",
   "cidade": "cidade",
   "estado": "UF (sigla de 2 letras)",
   "representante_nome": "nome completo do representante legal",
@@ -915,6 +917,7 @@ def build_data_summary(data):
 - Data de nascimento: {data.get('data_nascimento', '')}
 - RG: {data.get('rg', '')}
 - Endereço: {data.get('endereco', '')}
+- CEP: {data.get('cep', '')}
 - Cidade/Comarca: {data.get('cidade', '')}
 - Estado: {data.get('estado', '')}
 """
@@ -3322,6 +3325,535 @@ def health_check():
 def monitoramento_page():
     """Page for process monitoring and intimation analysis."""
     return render_template("monitoramento.html")
+
+
+# ==================== WHATSAPP BOT (ConversApp) ====================
+
+CONVERSAPP_API_TOKEN = os.environ.get("CONVERSAPP_API_TOKEN", "")  # Bearer token: pn_xxxx
+CONVERSAPP_API_BASE = "https://api.wts.chat"
+CONVERSAPP_CHANNEL_ID = os.environ.get("CONVERSAPP_CHANNEL_ID", "5395dbba-34f9-42a5-852f-77e5e11a7c94")
+
+# Business hours (Brazil timezone)
+BOT_HORA_INICIO = 8   # 8h
+BOT_HORA_FIM = 18     # 18h
+
+# Conversation state per phone number
+# Persisted in DB if available, otherwise in-memory
+_whatsapp_sessions = {}
+
+BOT_SYSTEM_PROMPT = """Você é a assistente virtual do escritório do *Dr. José Roberto da Costa Junior* (OAB/SP 378.163), especializado em Direito Previdenciário e Assistencial (BPC/LOAS, aposentadorias, auxílios do INSS).
+
+Seu nome é *Ana* e você é a assistente de pós-venda do escritório. Seu papel é atender os clientes de forma calorosa, empática e em linguagem simples, como se fosse uma pessoa real.
+
+PERSONALIDADE:
+- Simpática, acolhedora e paciente
+- Usa linguagem simples e clara (ZERO juridiquês)
+- Chama o cliente pelo primeiro nome
+- Demonstra empatia ("Entendo sua preocupação", "Fique tranquilo(a)")
+- Usa emojis com moderação (1-2 por mensagem, não exagerar)
+
+O QUE VOCÊ PODE FAZER:
+1. Consultar o andamento do processo do cliente
+2. Explicar movimentações processuais de forma simples
+3. Informar sobre o escritório e áreas de atuação
+4. Encaminhar para o advogado quando necessário
+
+REGRAS IMPORTANTES:
+- NUNCA mencione valores financeiros do processo
+- NUNCA invente informações ou dê prazos que não tenha certeza
+- NUNCA dê parecer jurídico ou orientação legal específica
+- Se o cliente quiser falar com o advogado, diga: "Vou encaminhar para o Dr. José Roberto. Ele entrará em contato com você em breve!"
+- Se perguntar sobre honorários/valores de serviço, diga que o escritório oferece uma consulta inicial e que o Dr. José Roberto pode explicar melhor
+- Use formatação WhatsApp: *negrito* para destaques
+- Respostas curtas (máximo 3-4 parágrafos)
+- Sempre finalize oferecendo mais ajuda
+
+ÁREAS DE ATUAÇÃO DO ESCRITÓRIO:
+- BPC/LOAS (Benefício de Prestação Continuada)
+- Aposentadorias (por idade, tempo de contribuição, especial)
+- Auxílio-doença / Auxílio por incapacidade
+- Pensão por morte
+- Revisões de benefícios do INSS
+- Recursos administrativos e judiciais contra o INSS
+
+SAUDAÇÃO CONFORME HORÁRIO:
+- 6h-12h: "Bom dia"
+- 12h-18h: "Boa tarde"
+- 18h-24h/0h-6h: "Boa noite"
+"""
+
+BOT_MSG_FORA_HORARIO = """Olá! 😊
+
+Obrigada por entrar em contato com o escritório do *Dr. José Roberto da Costa Junior*.
+
+Nosso horário de atendimento é de *segunda a sexta, das 8h às 18h*.
+
+Sua mensagem é muito importante para nós! Assim que retornarmos, entraremos em contato.
+
+Se for urgente, pode deixar sua mensagem aqui que daremos prioridade amanhã pela manhã. 🙏"""
+
+
+def conversapp_request(method, endpoint, **kwargs):
+    """Make authenticated request to Helena CRM API."""
+    url = f"{CONVERSAPP_API_BASE}{endpoint}"
+    headers = kwargs.pop("headers", {})
+    headers["Authorization"] = f"Bearer {CONVERSAPP_API_TOKEN}"
+    headers["Content-Type"] = "application/json"
+    return getattr(requests, method)(url, headers=headers, timeout=30, **kwargs)
+
+
+def whatsapp_send_message(phone, text, session_id=None):
+    """Send a WhatsApp message via Helena CRM API."""
+    if not CONVERSAPP_API_TOKEN:
+        print(f"[WHATSAPP] (sem token) Msg para {phone}: {text[:100]}...")
+        return False
+    try:
+        # If we have a session, reply in it
+        if session_id:
+            resp = conversapp_request("post", f"/chat/v1/session/{session_id}/message",
+                                  json={"text": text})
+        else:
+            # Send new message (needs channel + phone)
+            payload = {
+                "channelId": CONVERSAPP_CHANNEL_ID,
+                "number": phone,
+                "text": text,
+            }
+            resp = conversapp_request("post", "/chat/v1/message/send", json=payload)
+
+        if resp.status_code in (200, 201):
+            print(f"[WHATSAPP] Enviado para {phone}")
+            return True
+        else:
+            print(f"[WHATSAPP] Erro ao enviar: {resp.status_code} {resp.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"[WHATSAPP] Erro: {e}")
+        return False
+
+
+def whatsapp_buscar_processo(nome=None, cpf=None):
+    """Search for a process by client name or CPF in the cached process list."""
+    # Load process cache
+    todos = _load_json_file(PROCESSES_CACHE_FILE)
+    if not todos:
+        # Try fetching first page from API
+        try:
+            resp = legalmail_request("get", "/process/all?offset=0&limit=50")
+            todos = resp.json() if resp.status_code == 200 and isinstance(resp.json(), list) else []
+        except Exception:
+            todos = []
+
+    encontrados = []
+    if cpf:
+        cpf_clean = re.sub(r'\D', '', cpf)
+        for p in todos:
+            polo_doc = re.sub(r'\D', '', p.get("poloativo_cpf", "") or "")
+            if polo_doc and polo_doc == cpf_clean:
+                encontrados.append(p)
+    if not encontrados and nome:
+        nome_lower = nome.lower().strip()
+        # Try partial match (first name or full name) - only match non-empty polo
+        for p in todos:
+            polo = (p.get("poloativo_nome") or "").lower()
+            if polo and nome_lower and (nome_lower in polo or polo in nome_lower):
+                encontrados.append(p)
+        # If too many, try stricter match (exact or first word match)
+        if len(encontrados) > 5:
+            primeiro_nome = nome_lower.split()[0] if nome_lower else ""
+            strict = [p for p in encontrados
+                      if nome_lower == (p.get("poloativo_nome") or "").lower()
+                      or (primeiro_nome and (p.get("poloativo_nome") or "").lower().startswith(primeiro_nome))]
+            if strict:
+                encontrados = strict
+
+    return encontrados[:5]  # Max 5 results
+
+
+def whatsapp_get_movimentacoes(idprocesso):
+    """Get recent movements for a process."""
+    movs = []
+    try:
+        resp = legalmail_request("get", f"/process/autos?idprocesso={idprocesso}")
+        if resp.status_code == 200:
+            autos = resp.json()
+            if isinstance(autos, list):
+                movs = autos[:5]
+    except Exception:
+        pass
+    # Fallback: notifications cache
+    if not movs:
+        notificacoes = _load_notifications()
+        movs = [
+            {"titulo": n.get("titulo_movimentacao", ""), "data_movimentacao": n.get("data_movimentacao", "")}
+            for n in notificacoes
+            if str(n.get("idprocesso")) == str(idprocesso)
+        ][:5]
+    return movs
+
+
+
+def _get_saudacao():
+    """Return greeting based on current Brazil time."""
+    from datetime import datetime, timedelta, timezone
+    br_tz = timezone(timedelta(hours=-3))
+    hora = datetime.now(br_tz).hour
+    if 6 <= hora < 12:
+        return "Bom dia"
+    elif 12 <= hora < 18:
+        return "Boa tarde"
+    else:
+        return "Boa noite"
+
+
+def _is_horario_comercial():
+    """Check if current time is within business hours (Brazil)."""
+    from datetime import datetime, timedelta, timezone
+    br_tz = timezone(timedelta(hours=-3))
+    now = datetime.now(br_tz)
+    # Monday=0, Sunday=6
+    if now.weekday() >= 5:  # Weekend
+        return False
+    return BOT_HORA_INICIO <= now.hour < BOT_HORA_FIM
+
+
+def whatsapp_processar_mensagem(phone, message):
+    """Process incoming WhatsApp message using Claude AI for natural conversation."""
+    msg = message.strip()
+    msg_lower = msg.lower()
+
+    # Check business hours
+    if not _is_horario_comercial():
+        # Outside hours: send auto-reply only once per session
+        session = _whatsapp_sessions.get(phone, {})
+        if session.get("fora_horario_enviado"):
+            return None  # Don't spam the same message
+        session["fora_horario_enviado"] = True
+        _whatsapp_sessions[phone] = session
+        return BOT_MSG_FORA_HORARIO
+
+    # Get or create session
+    session = _whatsapp_sessions.get(phone, {"historico": [], "processo": None})
+    # Reset "fora_horario" flag when in business hours
+    session.pop("fora_horario_enviado", None)
+
+    # Keep conversation history (last 10 messages for context)
+    historico = session.get("historico", [])
+    historico.append({"role": "user", "content": msg})
+    if len(historico) > 20:
+        historico = historico[-20:]
+    session["historico"] = historico
+
+    # Detect if client wants to check a process
+    processo_info = ""
+    processo = session.get("processo")
+
+    # Check if message looks like a CPF
+    digits = re.sub(r'\D', '', msg)
+    is_cpf = len(digits) >= 9 and len(digits) <= 11
+
+    # Check if client is providing identification (name or CPF)
+    wants_processo = any(kw in msg_lower for kw in [
+        "processo", "andamento", "ação", "acao", "como está", "como esta",
+        "novidade", "atualização", "atualizacao", "movimentação", "movimentacao",
+        "sentença", "sentenca", "audiência", "audiencia", "perícia", "pericia",
+        "meu caso", "meu benefício", "meu beneficio"
+    ])
+
+    # If client previously asked about processo and is now giving name/CPF
+    aguardando_id = session.get("aguardando_identificacao", False)
+
+    if aguardando_id or is_cpf:
+        # Try to find process
+        if is_cpf:
+            processos = whatsapp_buscar_processo(cpf=msg)
+        else:
+            processos = whatsapp_buscar_processo(nome=msg)
+
+        if processos:
+            if len(processos) == 1:
+                proc = processos[0]
+                session["processo"] = proc
+                session["aguardando_identificacao"] = False
+                movs = whatsapp_get_movimentacoes(proc.get("idprocessos"))
+                movs_texto = ""
+                for m in movs[:5]:
+                    data_m = (m.get("data_movimentacao") or "")[:10]
+                    titulo = m.get("titulo") or m.get("titulo_movimentacao", "")
+                    movs_texto += f"- {data_m}: {titulo}\n"
+                processo_info = f"""
+PROCESSO ENCONTRADO:
+- Número: {proc.get('numero_processo', '')}
+- Cliente: {proc.get('poloativo_nome', '')}
+- Tribunal: {proc.get('tribunal', '')}
+- Classe: {proc.get('nome_classe') or proc.get('abreviatura_classe', '')}
+- Juízo: {proc.get('juizo', '')}
+- Status: {proc.get('inbox_atual', 'Em andamento')}
+Últimas movimentações:
+{movs_texto or 'Nenhuma movimentação recente.'}
+"""
+            elif len(processos) > 1:
+                lista = ""
+                for i, p in enumerate(processos, 1):
+                    nome_p = p.get("poloativo_nome", "?")
+                    numero_p = p.get("numero_processo", "?")
+                    lista += f"{i}. {nome_p} - {numero_p} ({p.get('tribunal', '')})\n"
+                processo_info = f"\nFORAM ENCONTRADOS {len(processos)} PROCESSOS:\n{lista}\nPergunte ao cliente qual deles."
+                session["opcoes_processo"] = processos
+        elif aguardando_id:
+            processo_info = "\nNENHUM PROCESSO ENCONTRADO com esse nome/CPF. Peça para tentar novamente com o nome completo como está no processo."
+            session["aguardando_identificacao"] = False
+
+    # If already has a process in session, include it
+    elif processo and not processo_info:
+        movs = whatsapp_get_movimentacoes(processo.get("idprocessos"))
+        movs_texto = ""
+        for m in movs[:5]:
+            data_m = (m.get("data_movimentacao") or "")[:10]
+            titulo = m.get("titulo") or m.get("titulo_movimentacao", "")
+            movs_texto += f"- {data_m}: {titulo}\n"
+        processo_info = f"""
+PROCESSO DO CLIENTE (já identificado):
+- Número: {processo.get('numero_processo', '')}
+- Cliente: {processo.get('poloativo_nome', '')}
+- Tribunal: {processo.get('tribunal', '')}
+- Status: {processo.get('inbox_atual', 'Em andamento')}
+Últimas movimentações:
+{movs_texto or 'Nenhuma movimentação recente.'}
+"""
+
+    # Check if client chose from multiple options
+    opcoes = session.get("opcoes_processo")
+    if opcoes:
+        try:
+            idx = int(msg.strip()) - 1
+            if 0 <= idx < len(opcoes):
+                proc = opcoes[idx]
+                session["processo"] = proc
+                session.pop("opcoes_processo", None)
+                movs = whatsapp_get_movimentacoes(proc.get("idprocessos"))
+                movs_texto = ""
+                for m in movs[:5]:
+                    data_m = (m.get("data_movimentacao") or "")[:10]
+                    titulo = m.get("titulo") or m.get("titulo_movimentacao", "")
+                    movs_texto += f"- {data_m}: {titulo}\n"
+                processo_info = f"""
+PROCESSO SELECIONADO PELO CLIENTE:
+- Número: {proc.get('numero_processo', '')}
+- Cliente: {proc.get('poloativo_nome', '')}
+- Tribunal: {proc.get('tribunal', '')}
+- Status: {proc.get('inbox_atual', 'Em andamento')}
+Últimas movimentações:
+{movs_texto or 'Nenhuma movimentação recente.'}
+"""
+        except (ValueError, IndexError):
+            pass
+
+    # If client wants to check process but hasn't identified yet
+    if wants_processo and not processo and not processo_info:
+        session["aguardando_identificacao"] = True
+
+    # Build conversation for Claude
+    saudacao = _get_saudacao()
+    system_msg = f"""{BOT_SYSTEM_PROMPT}
+
+HORÁRIO ATUAL: {saudacao} (usar esta saudação se for a primeira mensagem)
+PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
+{processo_info}
+{"O CLIENTE QUER CONSULTAR UM PROCESSO - peça o nome completo ou CPF dele para localizar." if session.get("aguardando_identificacao") else ""}
+"""
+
+    # Build messages for Claude (with history for context)
+    messages = []
+    for h in historico[-10:]:
+        messages.append({"role": h["role"], "content": h["content"]})
+
+    try:
+        client_ai = anthropic.Anthropic()
+        response = client_ai.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=500,
+            system=system_msg,
+            messages=messages,
+        )
+        resposta = response.content[0].text.strip()
+
+        # Save assistant response in history
+        historico.append({"role": "assistant", "content": resposta})
+        session["historico"] = historico
+        _whatsapp_sessions[phone] = session
+
+        return resposta
+    except Exception as e:
+        print(f"[WHATSAPP] Erro IA: {e}")
+        return f"{_get_saudacao()}! 😊 Desculpe, estou com uma dificuldade técnica no momento. Por favor, tente novamente em alguns minutos ou entre em contato diretamente com o escritório."
+
+
+@app.route("/api/whatsapp/webhook", methods=["POST"])
+def whatsapp_webhook():
+    """Webhook receiver for ConversApp events.
+
+    ConversApp sends MESSAGE_RECEIVED events when clients send messages.
+    Configure webhook in ConversApp: Settings > Integrations > Webhooks
+    URL: https://your-app.railway.app/api/whatsapp/webhook
+    Event: MESSAGE_RECEIVED
+    """
+    data = request.get_json() or {}
+
+    event_type = data.get("event") or data.get("type") or ""
+
+    # Log the raw webhook for debugging (first 500 chars)
+    print(f"[WHATSAPP] Webhook: event={event_type}, keys={list(data.keys())}")
+
+    # Only process MESSAGE_RECEIVED events
+    if event_type not in ("MESSAGE_RECEIVED", "message.received", ""):
+        return jsonify({"status": "ok", "action": f"skipped_{event_type}"})
+
+    # Extract data - Helena/WTS nests under "data"
+    msg_data = data.get("data") or data
+    if isinstance(msg_data, list) and msg_data:
+        msg_data = msg_data[0]
+
+    # Filter by channel - ONLY respond on our pós-venda channel
+    channel_id = (msg_data.get("channelId")
+                  or msg_data.get("channel", {}).get("id") if isinstance(msg_data.get("channel"), dict) else ""
+                  or data.get("channelId")
+                  or "")
+    if CONVERSAPP_CHANNEL_ID and channel_id and channel_id != CONVERSAPP_CHANNEL_ID:
+        print(f"[WHATSAPP] Ignorando msg de outro canal: {channel_id}")
+        return jsonify({"status": "ok", "action": "wrong_channel"})
+
+    # Skip outgoing messages
+    direction = msg_data.get("direction") or ""
+    from_me = msg_data.get("fromMe")
+    if direction.upper() in ("OUTBOUND", "OUT", "SENT") or from_me in (True, "true"):
+        return jsonify({"status": "ok", "action": "skipped_outbound"})
+
+    # Extract phone number
+    phone = ""
+    contact = msg_data.get("contact") or msg_data.get("contactDetails") or {}
+    if isinstance(contact, dict):
+        phone = contact.get("phonenumber") or contact.get("phone") or contact.get("number") or ""
+    if not phone:
+        phone = msg_data.get("from") or msg_data.get("number") or msg_data.get("phone") or ""
+    phone = re.sub(r'[^\d+]', '', str(phone)).lstrip('+')
+
+    # Extract message text
+    message = (msg_data.get("text")
+               or msg_data.get("body")
+               or msg_data.get("content", {}).get("text") if isinstance(msg_data.get("content"), dict) else ""
+               or "")
+    if not message and isinstance(msg_data.get("content"), str):
+        message = msg_data["content"]
+
+    # Extract session ID for replying
+    session_id = (msg_data.get("sessionId")
+                  or (msg_data.get("session", {}).get("id") if isinstance(msg_data.get("session"), dict) else None)
+                  or data.get("sessionId")
+                  or None)
+
+    if phone and message:
+        print(f"[WHATSAPP] De {phone}: {message[:100]}")
+
+        # Store session_id
+        if session_id:
+            sess = _whatsapp_sessions.get(phone, {"historico": []})
+            sess["conversapp_session_id"] = session_id
+            _whatsapp_sessions[phone] = sess
+
+        # Process in background thread to not block webhook response
+        def _process():
+            try:
+                resposta = whatsapp_processar_mensagem(phone, message)
+                if resposta:
+                    sid = _whatsapp_sessions.get(phone, {}).get("conversapp_session_id") or session_id
+                    whatsapp_send_message(phone, resposta, session_id=sid)
+            except Exception as e:
+                print(f"[WHATSAPP] Erro: {e}")
+                traceback.print_exc()
+
+        threading.Thread(target=_process, daemon=True).start()
+    else:
+        print(f"[WHATSAPP] Sem texto processável. phone={phone}, msg_keys={list(msg_data.keys()) if isinstance(msg_data, dict) else type(msg_data)}")
+
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/whatsapp/test", methods=["POST"])
+def whatsapp_test():
+    """Test the bot logic without WhatsApp - send a message and get the response."""
+    data = request.get_json() or {}
+    phone = data.get("phone", "test")
+    message = data.get("message", "")
+    if not message:
+        return jsonify({"error": "Informe 'message'"}), 400
+
+    resposta = whatsapp_processar_mensagem(phone, message)
+    return jsonify({"response": resposta, "session": _whatsapp_sessions.get(phone, {})})
+
+
+@app.route("/api/whatsapp/status")
+def whatsapp_status():
+    """Check WhatsApp bot configuration status."""
+    return jsonify({
+        "helena_token": bool(CONVERSAPP_API_TOKEN),
+        "helena_channel": CONVERSAPP_CHANNEL_ID or "(não configurado)",
+        "active_sessions": len(_whatsapp_sessions),
+        "webhook_url": "/api/whatsapp/webhook",
+    })
+
+
+@app.route("/api/whatsapp/setup-webhook", methods=["POST"])
+def whatsapp_setup_webhook():
+    """Register webhook on ConversApp to receive messages.
+
+    Call this once after deploy to configure ConversApp to send events here.
+    Body: {"app_url": "https://your-app.railway.app"}
+    """
+    if not CONVERSAPP_API_TOKEN:
+        return jsonify({"error": "CONVERSAPP_API_TOKEN não configurado"}), 400
+
+    data = request.get_json() or {}
+    app_url = data.get("app_url", "").rstrip("/")
+    if not app_url:
+        return jsonify({"error": "Informe app_url"}), 400
+
+    webhook_url = f"{app_url}/api/whatsapp/webhook"
+
+    # First, list available events
+    try:
+        resp = conversapp_request("get", "/core/v1/webhook/event")
+        events = resp.json() if resp.status_code == 200 else []
+        print(f"[HELENA] Eventos disponíveis: {events}")
+    except Exception as e:
+        events = []
+        print(f"[HELENA] Erro ao listar eventos: {e}")
+
+    # Find message-related events
+    msg_events = []
+    if isinstance(events, list):
+        for ev in events:
+            ev_name = ev.get("name") or ev.get("event") or str(ev)
+            if any(kw in str(ev_name).lower() for kw in ["message", "mensagem", "received", "inbound"]):
+                msg_events.append(ev_name)
+
+    # Create webhook subscription
+    try:
+        payload = {
+            "url": webhook_url,
+            "events": msg_events if msg_events else ["message.received"],
+        }
+        resp = conversapp_request("post", "/core/v1/webhook/subscription", json=payload)
+        result = resp.json() if resp.status_code in (200, 201) else resp.text[:300]
+        return jsonify({
+            "status": "ok" if resp.status_code in (200, 201) else "erro",
+            "webhook_url": webhook_url,
+            "events_subscribed": msg_events or ["message.received"],
+            "available_events": events[:20] if events else "não listados",
+            "helena_response": result,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # Inicialização — roda tanto com gunicorn quanto python app.py

@@ -82,7 +82,7 @@ Formato obrigatório com **todos os campos**:
 ```
 [NOME DO AUTOR em negrito], [nacionalidade], [estado civil], [profissão/ocupação],
 portador do RG nº [RG] e CPF nº [CPF], nascido em [data], residente e domiciliado
-à [endereço completo, número, bairro, cidade/UF, CEP], representado neste ato por
+à [endereço completo, número, bairro], CEP [CEP], [cidade/UF], representado neste ato por
 sua [grau de parentesco] [NOME DO REPRESENTANTE em negrito], [nacionalidade],
 [estado civil], [profissão], portadora do RG nº [RG] e CPF nº [CPF], residente
 no mesmo endereço, vem, por intermédio de seu advogado, propor a presente
@@ -91,6 +91,8 @@ em face do INSTITUTO NACIONAL DO SEGURO SOCIAL – INSS [negrito], Autarquia Fed
 CNPJ nº 29.979.036/0001-40, representado judicialmente pela Procuradoria Federal
 Especializada junto ao INSS.
 ```
+
+**REGRA OBRIGATÓRIA - CEP**: O CEP DEVE estar presente na qualificação das partes, sempre no formato `CEP XXXXX-XXX`. Nunca omitir o CEP. Se o CEP não for fornecido, solicitar ao usuário antes de gerar.
 
 **Regras de formatação da qualificação:**
 - Nome do autor: **negrito** em todas as ocorrências
@@ -209,31 +211,129 @@ Para cada CID, incluir:
 
 ---
 
-## PLANILHA DE CÁLCULO DE ATRASADOS (modelo Conta Fácil Prev)
+## PLANILHA DE CÁLCULO DE ATRASADOS (modelo Conta Fácil Prev - padrão tribunais federais)
 
-Gerar **arquivo .xlsx separado** fiel ao modelo da JF/RS:
+Gerar **arquivo .xlsx separado** profissional e detalhado, no modelo aceito pelos tribunais federais (JF/RS - Conta Fácil Prev). A planilha deve ser **completa, organizada e autoexplicativa**, sem dados cortados ou ocultos.
 
-### Estrutura obrigatória
-1. **Cabeçalho**: "CONTA FÁCIL PREV - Programa para Cálculos em Ações Previdenciárias - INSS"
-2. **RESUMO DO CÁLCULO DO VALOR DA CAUSA / Réu: INSS**
-3. **1 - PARTES**: tabela com colunas: Nome | Principal corrigido | Juros Moratórios | Selic | Total (R$) + linha "Total Partes ->"
-4. **2 - TOTALIZAÇÃO**: SUBTOTAL DA CONTA (1) + TOTAL DA CONTA EM MM/AAAA
-5. **Linha de data e assinatura**: "Cálculo elaborado por:" + nome/OAB
-6. **Critérios e parâmetros**: texto corrido com todos os índices históricos
+### Estrutura obrigatória (3 abas)
 
-### Critérios padrão BPC/LOAS
-- Juros moratórios: "Não foram apurados com data de início variável"
-- Correção: INPC (09/2006 em diante) até 12/2021; Selic a partir de 01/2022
-- **Honorários advocatícios: "Não foram apurados"** (igual ao modelo original – honorários ficam APENAS na petição)
-- Composição histórica completa: ORTN → OTN → IPC/IBGE → BTN → IPC/IBGE → INPC → IRSM → URV → IPC-R → INPC → IGP-DI → INPC → Selic
-- Informar nº de parcelas vincendas (padrão: 12)
-- Versão: 6.0.12
+#### ABA 1: "Resumo" (página principal)
+Layout da aba Resumo (cada item = seção visual separada na planilha):
+
+1. **Cabeçalho** (linhas 1-4, mescladas A:H):
+   - Linha 1: "CONTA FÁCIL PREV" (negrito, tamanho 14, centralizado, fundo azul escuro #1F3864, texto branco)
+   - Linha 2: "Programa para Cálculos em Ações Previdenciárias - INSS" (tamanho 11, centralizado, fundo azul escuro, texto branco)
+   - Linha 3: vazia
+   - Linha 4: "RESUMO DO CÁLCULO DO VALOR DA CAUSA" (negrito, tamanho 12, centralizado, fundo cinza claro #D9E2F3)
+
+2. **Dados do processo** (linhas 6-14):
+   - Layout em 2 colunas (A=rótulo cinza, B-D=valor):
+     - Réu: INSTITUTO NACIONAL DO SEGURO SOCIAL - INSS
+     - Autor(a): [nome completo]
+     - Representante: [nome do representante] (se houver)
+     - CPF: [CPF]
+     - NB: [número do benefício]
+     - DER: [data de entrada do requerimento]
+     - Benefício: BPC/LOAS - Espécie 87
+     - RMI: 1 salário mínimo (R$ [SM atual])
+   - Rótulos: fundo #D9E2F3, negrito, alinhado à direita
+   - Valores: sem fundo, alinhado à esquerda
+
+3. **1 - PARTES** (tabela, a partir da linha 16):
+   - Cabeçalho da tabela: fundo azul escuro #1F3864, texto branco, negrito
+   - Colunas: A=Nome | B=Principal Corrigido | C=Juros Moratórios | D=Selic | E=Total (R$)
+   - Linha de dados: nome do autor, valores calculados
+   - **Linha Total Partes**: fundo #D9E2F3, negrito, com soma das colunas B:E
+   - Valores monetários: formato "R$ #.##0,00" (number_format='#,##0.00')
+   - Bordas finas em todas as células da tabela
+
+4. **2 - TOTALIZAÇÃO** (linhas seguintes):
+   - SUBTOTAL DA CONTA (1): valor (negrito)
+   - Parcelas vincendas (12 × SM): valor
+   - **TOTAL DA CONTA EM [MM/AAAA]**: fundo amarelo #FFF2CC, negrito, tamanho 12, borda dupla
+   - Este é o **valor da causa** que vai na petição
+
+5. **Assinatura** (4 linhas abaixo da totalização):
+   - "Cálculo elaborado em [data]"
+   - vazia
+   - "Dr. José Roberto da Costa Junior"
+   - "OAB/SP 378.163"
+
+#### ABA 2: "Cálculo Detalhado" (parcelas mês a mês)
+**Esta é a aba mais importante** - mostra cada parcela individualmente, mês a mês.
+
+Layout:
+1. **Cabeçalho** (linhas 1-2): Mesma formatação azul escuro da aba Resumo
+   - "DEMONSTRATIVO DE CÁLCULO - PARCELAS VENCIDAS"
+   - "Autor(a): [nome] | NB: [NB] | DER: [DER]"
+
+2. **Tabela de parcelas vencidas** (a partir da linha 4):
+   - Cabeçalho: fundo azul escuro #1F3864, texto branco, negrito
+   - Colunas obrigatórias:
+     - A: **Nº** (número sequencial da parcela: 1, 2, 3...)
+     - B: **Competência** (mês/ano no formato MM/AAAA)
+     - C: **Valor Original** (salário mínimo vigente no mês)
+     - D: **Índice Correção** (fator INPC acumulado ou "Selic" se ≥01/2022)
+     - E: **Principal Corrigido** (valor original × índice correção)
+     - F: **Juros Moratórios** (0,00 - não apurados)
+     - G: **Selic** (valor da Selic aplicada se ≥01/2022, senão 0,00)
+     - H: **Total Parcela** (E + F + G)
+   - **Cada mês em uma linha** - do mês seguinte à DER até o mês atual
+   - Linhas alternadas: branco e cinza claro #F2F2F2 (zebrado)
+   - Bordas finas em todas as células
+   - **Linha SUBTOTAL VENCIDAS**: fundo #D9E2F3, negrito, soma das colunas C, E, F, G, H
+
+3. **Tabela de parcelas vincendas** (abaixo das vencidas, separada por 2 linhas):
+   - Título: "PARCELAS VINCENDAS (12 meses)" em negrito
+   - Colunas: Nº | Competência | Valor (SM atual) | Total
+   - 12 linhas (meses futuros a partir do mês atual)
+   - **Linha SUBTOTAL VINCENDAS**: fundo #D9E2F3, negrito
+
+4. **Totalização final**:
+   - Total Vencidas: [soma]
+   - Total Vincendas: [soma]
+   - **TOTAL GERAL (VALOR DA CAUSA)**: fundo amarelo #FFF2CC, negrito, borda dupla
+
+#### ABA 3: "Critérios"
+Texto corrido com critérios e parâmetros do cálculo:
+- Seção "CRITÉRIOS E PARÂMETROS DO CÁLCULO" (negrito, tamanho 12)
+- Campos informativos (um por linha, rótulo negrito + valor):
+  - Benefício: BPC/LOAS - Espécie 87
+  - RMI: 1 salário mínimo
+  - DER: [data]
+  - DIP: mês seguinte à DER
+  - Data base do cálculo: [data atual]
+  - Moeda: Real (R$)
+- Seção "CORREÇÃO MONETÁRIA":
+  - "Índice utilizado: INPC (09/2006 em diante) até 12/2021"
+  - "A partir de 01/2022: Taxa Selic como índice único (EC 113/2021)"
+  - Composição histórica: ORTN (06/1964) → OTN (02/1986) → IPC/IBGE (01/1989) → BTN (05/1989) → IPC/IBGE (03/1990) → INPC (10/1991) → IRSM (01/1993) → URV (03/1994) → IPC-R (07/1994) → INPC (07/1995) → IGP-DI (04/1996) → INPC (01/2004) → Selic (01/2022)
+- Seção "JUROS MORATÓRIOS": "Não foram apurados com data de início variável"
+- Seção "HONORÁRIOS": "Não foram apurados" (honorários ficam APENAS na petição)
+- Seção "PARCELAS VINCENDAS": "12 parcelas × salário mínimo vigente (sem correção)"
+- Seção "FUNDAMENTAÇÃO LEGAL":
+  - Art. 203, V, CF/88
+  - Lei 8.742/1993 (LOAS), art. 20
+  - EC 113/2021 (Taxa Selic)
+  - Tema 810 STF (RE 870.947)
+- Versão: Conta Fácil Prev 6.0.12
+
+### Regras de formatação da planilha
+- **Larguras de coluna**: ajustar automaticamente ao conteúdo (col A mais larga para nomes)
+- **Congelar painéis**: congelar linha do cabeçalho da tabela em cada aba
+- **Formato numérico**: usar `number_format = '#,##0.00'` para valores monetários
+- **Bordas**: `Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))` em todas as células de tabela
+- **Impressão**: configurar `sheet.print_area`, `sheet.page_setup.orientation = 'landscape'`, margens estreitas
+- **Fonte padrão**: Calibri 10 para dados, Calibri 11 negrito para cabeçalhos
 
 ### Cálculo dos valores
-- Parcelas vencidas: DER até data do cálculo (meses × SM × fator correção INPC estimado)
-- Parcelas vincendas: 12 × SM sem correção (para valor da causa)
-- Selic: aplicar sobre parcelas vencidas desde 01/2022
-- Juros moratórios: deixar em 0,00 (não apurados)
+- **Parcelas vencidas**: mês seguinte à DER até mês atual. Cada mês = SM vigente naquele mês
+  - SM 2024: R$ 1.412,00 | SM 2025: R$ 1.518,00 | SM 2026: R$ 1.621,00
+  - Correção INPC: aplicar fator acumulado estimado (usar 0,5% a.m. como estimativa quando índice real não disponível)
+  - Selic: aplicar sobre parcelas de 01/2022 em diante (usar 1% a.m. como estimativa)
+- **Parcelas vincendas**: 12 × SM vigente (R$ 1.621,00 em 2026), sem correção
+- **Juros moratórios**: R$ 0,00 (não apurados - padrão Conta Fácil Prev)
+- **Total geral = valor da causa**: soma de vencidas corrigidas + vincendas
 
 ---
 
@@ -377,6 +477,7 @@ def empty():
 | Timbrado | `timbrado.docx` |
 | Fonte | Segoe UI |
 | Cor do documento | Preto e branco apenas |
+| SM 2024 | R$ 1.412,00 |
 | SM 2025 | R$ 1.518,00 |
 | SM 2026 | R$ 1.621,00 |
 | JEF competência | < 60 salários mínimos |
@@ -427,11 +528,16 @@ Ao redigir petições, citar apenas legislação e jurisprudência que comprovad
 - [ ] Seção 1.1 = Requerimento e Indeferimento (vem antes de saúde e socioeconômico)
 - [ ] Tabela de gastos sem coluna de observação e sem menção ao art. 20-B
 - [ ] Zero traços decorativos no texto
+- [ ] CEP presente na qualificação das partes (formato CEP XXXXX-XXX)
 - [ ] Cabeçalho com 5 linhas em branco antes das partes
 - [ ] Honorários item f) = item 11: sucumbência 20% art. 85 CPC
 - [ ] Honorários item g) = item 12: destaque honorários contratuais com nome e CNPJ da sociedade corretos
 - [ ] Toda legislação e jurisprudência citada é real e verificada
-- [ ] Planilha de cálculo segue modelo Conta Fácil Prev (honorários = "Não foram apurados")
+- [ ] Planilha de cálculo com 3 abas (Resumo, Cálculo Detalhado, Critérios)
+- [ ] Planilha com parcelas mês a mês na aba "Cálculo Detalhado"
+- [ ] Planilha com totais e subtotais destacados (fundo amarelo/azul)
+- [ ] Planilha com formatação profissional (bordas, zebrado, cabeçalhos coloridos)
+- [ ] Planilha com honorários = "Não foram apurados"
 - [ ] Quesitos em documentos separados com timbrado
 - [ ] Assinatura: nome e OAB em negrito, preto, centralizados
 - [ ] Data por extenso, alinhada à direita
