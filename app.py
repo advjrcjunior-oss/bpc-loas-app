@@ -3919,9 +3919,13 @@ PROCESSO ENCONTRADO (mais recente de {len(processos)} encontrados):
         elif aguardando_id:
             # Not found in LegalMail - try Gmail (INSS administrative)
             gmail_info = whatsapp_buscar_gmail_inss(msg)
+            print(f"[BOT] Gmail resultado: {bool(gmail_info)}")
             if gmail_info:
                 session["aguardando_identificacao"] = False
                 session["gmail_resultado"] = gmail_info
+                # Clean HTML from corpo for Claude
+                corpo_limpo = re.sub(r'<[^>]+>', ' ', gmail_info.get('corpo', ''))
+                corpo_limpo = re.sub(r'\s+', ' ', corpo_limpo).strip()[:300]
                 processo_info = f"""
 ANDAMENTO ADMINISTRATIVO ENCONTRADO NO GMAIL (e-mail do INSS):
 - Cliente: {gmail_info.get('nome_cliente', '')}
@@ -3930,10 +3934,7 @@ ANDAMENTO ADMINISTRATIVO ENCONTRADO NO GMAIL (e-mail do INSS):
 - Status INSS: {gmail_info.get('status_inss', 'não identificado')}
 - Data do e-mail: {gmail_info.get('data_email', '')}
 
-Conteúdo do e-mail (resumo):
-{gmail_info.get('corpo', '')[:500]}
-
-INSTRUÇÃO: Apresente essas informações seguindo o PASSO 5 do fluxo (andamento administrativo). Traduza o status conforme as traduções obrigatórias. Se o status for cancelado, NÃO informe o motivo - encaminhe para a equipe.
+INSTRUÇÃO: Apresente essas informações ao cliente. Use o formato do PASSO 5 (andamento administrativo). Traduza o status conforme as traduções obrigatórias. Se o status for cancelado, NÃO informe o motivo - encaminhe para a equipe.
 """
             else:
                 processo_info = "\nNENHUM PROCESSO ENCONTRADO nem no sistema judicial nem nos e-mails do INSS. Peça para tentar novamente com o nome completo como está no processo ou encaminhe para a equipe."
@@ -4030,7 +4031,16 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
         return resposta
     except Exception as e:
         print(f"[WHATSAPP] Erro IA: {e}")
-        return f"{_get_saudacao()}! 😊 Desculpe, estou com uma dificuldade técnica no momento. Por favor, tente novamente em alguns minutos ou entre em contato diretamente com o escritório."
+        traceback.print_exc()
+        # If we had data but Claude failed, still try to send basic info
+        if dados_encontrados and processo_info:
+            gmail_info = session.get("gmail_resultado")
+            if gmail_info:
+                return [
+                    session.pop("_mensagem_consulta", "Vou consultar, um momento."),
+                    f"Encontrei o andamento do benefício:\n\nProtocolo: {gmail_info.get('protocolo', '-')}\nStatus: {gmail_info.get('status_inss', '-')}\nData: {gmail_info.get('data_email', '-')}\n\nQualquer dúvida pode me chamar!"
+                ]
+        return f"{_get_saudacao()}! Desculpe, estou com uma dificuldade técnica no momento. Por favor, tente novamente em alguns minutos ou entre em contato diretamente com o escritório."
 
 
 _webhook_log = []  # Store last 20 webhook payloads for debugging
