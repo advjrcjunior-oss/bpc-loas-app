@@ -3859,7 +3859,8 @@ def _build_resultado_msg(session, processo_info):
         tribunal = proc.get("tribunal", "")
         cliente = proc.get("poloativo_nome", "")
 
-        movs = whatsapp_get_movimentacoes(proc.get("idprocessos"))
+        # Use cached movimentações if available, otherwise fetch
+        movs = session.get("_movimentacoes") or whatsapp_get_movimentacoes(proc.get("idprocessos"))
         movs_texto = ""
         for m in movs[:5]:
             data_m = (m.get("data_movimentacao") or "")[:10]
@@ -3996,13 +3997,17 @@ def whatsapp_processar_mensagem(phone, message):
 
     # Check if message looks like a person's name (not a keyword/answer)
     palavras_nao_nome = {
-        "inss", "sim", "não", "nao", "ok", "benefício", "beneficio", "benefício",
+        "inss", "sim", "não", "nao", "ok", "benefício", "beneficio",
         "trabalhista", "processo", "andamento", "loas", "bpc", "aposentadoria",
         "filho", "filha", "mãe", "mae", "pai", "marido", "esposa", "meu", "minha",
-        "oi", "olá", "ola", "bom dia", "boa tarde", "boa noite", "obrigado", "obrigada",
+        "oi", "olá", "ola", "bom", "dia", "boa", "tarde", "noite", "obrigado", "obrigada",
         "é", "e", "do", "da", "de", "o", "a", "um", "uma", "pra", "para", "no", "na",
         "como", "está", "esta", "tá", "ta", "quero", "preciso", "saber", "ver",
         "judicial", "administrativo", "outro", "outra", "tipo", "qual",
+        "tudo", "bem", "isso", "esse", "essa", "aqui", "ali", "lá", "la",
+        "por", "favor", "por favor", "obrigada", "muito", "só", "so", "ainda",
+        "quando", "onde", "porque", "mas", "que", "se", "com", "sem", "até", "ate",
+        "?", "!", ".", "nada", "algo", "alguma", "coisa", "pode", "ajudar",
     }
     msg_parece_nome = not is_cpf and msg_lower not in palavras_nao_nome and len(msg.strip()) > 2
     # Also check: if ALL words are non-name keywords, it's not a name
@@ -4063,9 +4068,10 @@ def whatsapp_processar_mensagem(phone, message):
                 gmail_info = whatsapp_buscar_gmail_inss(msg)
                 print(f"[BOT] Gmail fallback resultado: {bool(gmail_info)}")
 
-        # Set processo_info based on what was found
+        # Set processo_info based on what was found (clear search state)
         if gmail_info:
             session["aguardando_identificacao"] = False
+            session.pop("contexto_inss", None)
             gmail_resultado_limpo = {k: v for k, v in gmail_info.items() if k != 'corpo'}
             session["gmail_resultado"] = gmail_resultado_limpo
             processo_info = f"""
@@ -4079,7 +4085,9 @@ ANDAMENTO ADMINISTRATIVO ENCONTRADO NO GMAIL (e-mail do INSS):
         elif proc_encontrado:
             session["processo"] = proc_encontrado
             session["aguardando_identificacao"] = False
+            session.pop("contexto_inss", None)
             movs = whatsapp_get_movimentacoes(proc_encontrado.get("idprocessos"))
+            session["_movimentacoes"] = movs  # Cache for _build_resultado_msg
             movs_texto = ""
             for m in movs[:5]:
                 data_m = (m.get("data_movimentacao") or "")[:10]
@@ -4096,6 +4104,11 @@ PROCESSO ENCONTRADO:
 Últimas movimentações:
 {movs_texto or 'Nenhuma movimentação recente.'}
 """
+        elif processos:
+            # Found processes but couldn't disambiguate - ask for full name
+            nomes_lista = ", ".join(sorted(set((p.get("poloativo_nome") or "").strip() for p in processos)))
+            processo_info = f"\nENCONTREI PROCESSOS MAS NÃO CONSEGUI IDENTIFICAR O CLIENTE CORRETO. Nomes encontrados: {nomes_lista}. Peça o nome completo ou sobrenome para identificar corretamente."
+            session["aguardando_identificacao"] = True
         else:
             processo_info = "\nNENHUM PROCESSO ENCONTRADO nem no sistema judicial nem nos e-mails do INSS. Peça para tentar novamente com o nome completo como está no processo ou encaminhe para a equipe."
             session["aguardando_identificacao"] = False
@@ -4379,7 +4392,7 @@ def whatsapp_webhook():
 
         threading.Thread(target=_process, daemon=True).start()
     else:
-        print(f"[WHATSAPP] Sem texto processável. phone={phone}, msg_keys={list(msg_data.keys()) if isinstance(msg_data, dict) else type(msg_data)}")
+        print(f"[WHATSAPP] Sem texto processável. phone={phone}, content_type={type(content).__name__}")
 
     return jsonify({"status": "ok"})
 
