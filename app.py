@@ -3968,7 +3968,7 @@ def whatsapp_processar_mensagem(phone, message):
     print(f"[BOT] aguardando_id={aguardando_id}, is_cpf={is_cpf}, msg_parece_nome={msg_parece_nome}, msg='{msg[:50]}'")
 
     if aguardando_id and (is_cpf or msg_parece_nome):
-        # Try to find process
+        # Try to find process in LegalMail
         print(f"[BOT] Buscando processo para: '{msg}'")
         if is_cpf:
             processos = whatsapp_buscar_processo(cpf=msg)
@@ -3976,70 +3976,53 @@ def whatsapp_processar_mensagem(phone, message):
             processos = whatsapp_buscar_processo(nome=msg)
         print(f"[BOT] LegalMail encontrou: {len(processos)} processos")
 
+        # Filter: only keep processes where the name actually matches well
+        proc_encontrado = None
         if processos:
-            if len(processos) == 1:
-                proc = processos[0]
-                session["processo"] = proc
-                session["aguardando_identificacao"] = False
-                movs = whatsapp_get_movimentacoes(proc.get("idprocessos"))
-                movs_texto = ""
-                for m in movs[:5]:
-                    data_m = (m.get("data_movimentacao") or "")[:10]
-                    titulo = m.get("titulo") or m.get("titulo_movimentacao", "")
-                    movs_texto += f"- {data_m}: {titulo}\n"
-                processo_info = f"""
+            nomes_unicos = set((p.get("poloativo_nome") or "").strip().upper() for p in processos)
+            if len(nomes_unicos) == 1:
+                # All same client
+                proc_encontrado = max(processos, key=lambda p: p.get("data_cadastro") or p.get("data_distribuicao") or "")
+            elif len(processos) == 1:
+                proc_encontrado = processos[0]
+            else:
+                # Multiple different clients - check if any name closely matches the search
+                nome_busca = msg.lower().strip()
+                for p in processos:
+                    polo = (p.get("poloativo_nome") or "").lower()
+                    if nome_busca in polo or polo in nome_busca:
+                        proc_encontrado = p
+                        break
+
+        if proc_encontrado:
+            session["processo"] = proc_encontrado
+            session["aguardando_identificacao"] = False
+            movs = whatsapp_get_movimentacoes(proc_encontrado.get("idprocessos"))
+            movs_texto = ""
+            for m in movs[:5]:
+                data_m = (m.get("data_movimentacao") or "")[:10]
+                titulo = m.get("titulo") or m.get("titulo_movimentacao", "")
+                movs_texto += f"- {data_m}: {titulo}\n"
+            processo_info = f"""
 PROCESSO ENCONTRADO:
-- Número: {proc.get('numero_processo', '')}
-- Cliente: {proc.get('poloativo_nome', '')}
-- Tribunal: {proc.get('tribunal', '')}
-- Classe: {proc.get('nome_classe') or proc.get('abreviatura_classe', '')}
-- Juízo: {proc.get('juizo', '')}
-- Status: {proc.get('inbox_atual', 'Em andamento')}
+- Número: {proc_encontrado.get('numero_processo', '')}
+- Cliente: {proc_encontrado.get('poloativo_nome', '')}
+- Tribunal: {proc_encontrado.get('tribunal', '')}
+- Classe: {proc_encontrado.get('nome_classe') or proc_encontrado.get('abreviatura_classe', '')}
+- Juízo: {proc_encontrado.get('juizo', '')}
+- Status: {proc_encontrado.get('inbox_atual', 'Em andamento')}
 Últimas movimentações:
 {movs_texto or 'Nenhuma movimentação recente.'}
 """
-            elif len(processos) > 1:
-                # Check if results are from different clients (different names)
-                nomes_unicos = set((p.get("poloativo_nome") or "").strip().upper() for p in processos)
-                if len(nomes_unicos) > 1:
-                    # Multiple different clients found - ask for full name
-                    session["aguardando_identificacao"] = True
-                    nomes_lista = ", ".join(sorted(nomes_unicos))
-                    processo_info = f"\nMÚLTIPLOS CLIENTES ENCONTRADOS com nomes diferentes: {nomes_lista}. Peça o nome completo ou sobrenome para identificar corretamente."
-                else:
-                    # Same client with multiple processes - pick most recent
-                    proc = max(processos, key=lambda p: p.get("data_cadastro") or p.get("data_distribuicao") or "")
-                    session["processo"] = proc
-                    session["aguardando_identificacao"] = False
-                    movs = whatsapp_get_movimentacoes(proc.get("idprocessos"))
-                    movs_texto = ""
-                    for m in movs[:5]:
-                        data_m = (m.get("data_movimentacao") or "")[:10]
-                        titulo = m.get("titulo") or m.get("titulo_movimentacao", "")
-                        movs_texto += f"- {data_m}: {titulo}\n"
-                    processo_info = f"""
-PROCESSO ENCONTRADO (mais recente de {len(processos)} encontrados):
-- Número: {proc.get('numero_processo', '')}
-- Cliente: {proc.get('poloativo_nome', '')}
-- Tribunal: {proc.get('tribunal', '')}
-- Classe: {proc.get('nome_classe') or proc.get('abreviatura_classe', '')}
-- Juízo: {proc.get('juizo', '')}
-- Status: {proc.get('inbox_atual', 'Em andamento')}
-Últimas movimentações:
-{movs_texto or 'Nenhuma movimentação recente.'}
-"""
-        elif aguardando_id:
-            # Not found in LegalMail - try Gmail (INSS administrative)
+        else:
+            # Not found in LegalMail (or ambiguous) - try Gmail (INSS administrative)
+            print(f"[BOT] LegalMail sem match preciso, tentando Gmail...")
             gmail_info = whatsapp_buscar_gmail_inss(msg)
             print(f"[BOT] Gmail resultado: {bool(gmail_info)}")
             if gmail_info:
                 session["aguardando_identificacao"] = False
-                # Store gmail result without huge HTML body
                 gmail_resultado_limpo = {k: v for k, v in gmail_info.items() if k != 'corpo'}
                 session["gmail_resultado"] = gmail_resultado_limpo
-                # Clean HTML from corpo for Claude
-                corpo_limpo = re.sub(r'<[^>]+>', ' ', gmail_info.get('corpo', ''))
-                corpo_limpo = re.sub(r'\s+', ' ', corpo_limpo).strip()[:300]
                 processo_info = f"""
 ANDAMENTO ADMINISTRATIVO ENCONTRADO NO GMAIL (e-mail do INSS):
 - Cliente: {gmail_info.get('nome_cliente', '')}
@@ -4047,9 +4030,13 @@ ANDAMENTO ADMINISTRATIVO ENCONTRADO NO GMAIL (e-mail do INSS):
 - Serviço: {gmail_info.get('servico', 'não identificado')}
 - Status INSS: {gmail_info.get('status_inss', 'não identificado')}
 - Data do e-mail: {gmail_info.get('data_email', '')}
-
-INSTRUÇÃO: Apresente essas informações ao cliente de forma clara e simples, sem emojis. Traduza o status conforme as traduções obrigatórias (Exigência = o INSS pediu documentos adicionais). Se o status for cancelado, NÃO informe o motivo - encaminhe para a equipe. Depois pergunte se ficou alguma dúvida.
 """
+            elif processos and len(set((p.get("poloativo_nome") or "").strip().upper() for p in processos)) > 1:
+                # Multiple different clients in LegalMail, no Gmail - ask for full name
+                nomes_unicos = set((p.get("poloativo_nome") or "").strip().upper() for p in processos)
+                session["aguardando_identificacao"] = True
+                nomes_lista = ", ".join(sorted(nomes_unicos))
+                processo_info = f"\nMÚLTIPLOS CLIENTES ENCONTRADOS com nomes diferentes: {nomes_lista}. Peça o nome completo ou sobrenome para identificar corretamente."
             else:
                 processo_info = "\nNENHUM PROCESSO ENCONTRADO nem no sistema judicial nem nos e-mails do INSS. Peça para tentar novamente com o nome completo como está no processo ou encaminhe para a equipe."
                 session["aguardando_identificacao"] = False
