@@ -3905,6 +3905,7 @@ def _build_resultado_msg(session, processo_info):
             system="""Você é Ana, do pós-venda da JRC Advocacia. Formate uma mensagem de WhatsApp com os dados abaixo.
 
 REGRAS:
+- NÃO comece com saudação (sem "Oi", "Olá", nome do cliente, acenos). Já foi enviada uma mensagem antes dizendo "vou consultar". Comece DIRETO com os dados.
 - Use emojis e negrito (*texto*) APENAS no resumo dos dados (cabeçalho)
 - Depois do resumo, explique em linguagem simples o que está acontecendo e os próximos passos
 - Tom acolhedor e direto, sem juridiquês
@@ -4015,8 +4016,9 @@ def whatsapp_processar_mensagem(phone, message):
     # Detect INSS context from conversation history
     contexto_inss = session.get("contexto_inss", False)
     if not contexto_inss:
-        historico_texto = " ".join(h.get("content", "") for h in historico).lower()
-        if any(kw in historico_texto for kw in ["inss", "benefício", "beneficio", "bpc", "loas", "administrativo"]):
+        # Only check USER messages (not bot messages that mention INSS in triaging)
+        user_texto = " ".join(h.get("content", "") for h in historico if h.get("role") == "user").lower()
+        if any(kw in user_texto for kw in ["inss", "benefício", "beneficio", "bpc", "loas"]):
             contexto_inss = True
             session["contexto_inss"] = True
 
