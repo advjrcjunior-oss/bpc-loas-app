@@ -3336,7 +3336,7 @@ CONVERSAPP_CHANNEL_ID = os.environ.get("CONVERSAPP_CHANNEL_ID", "5395dbba-34f9-4
 
 # Business hours (Brazil timezone)
 BOT_HORA_INICIO = 8   # 8h
-BOT_HORA_FIM = 19     # 19h
+BOT_HORA_FIM = 21     # 21h (temporário para teste)
 
 # Conversation state per phone number
 # Persisted in DB if available, otherwise in-memory
