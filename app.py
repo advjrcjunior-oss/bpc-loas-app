@@ -3742,13 +3742,20 @@ def whatsapp_webhook():
     content = inner.get("content") or inner
     if isinstance(content, list) and content:
         content = content[0]
-    details = content.get("details") or {} if isinstance(content, dict) else {}
+    details = (content.get("details") or {}) if isinstance(content, dict) else {}
 
-    # Skip outgoing messages (FROM_HUB = incoming from client, TO_HUB = outgoing)
+    # Skip outgoing messages FIRST (FROM_HUB = incoming from client, TO_HUB = outgoing)
     direction = content.get("direction") or inner.get("direction") or ""
     from_me = content.get("fromMe") or inner.get("fromMe")
     if direction.upper() in ("TO_HUB", "OUTBOUND", "OUT", "SENT") or from_me in (True, "true"):
         return jsonify({"status": "ok", "action": "skipped_outbound"})
+
+    # Filter by destination number (pós-venda) since ConversApp doesn't send channelId
+    dest_number = (details.get("to") or "") if isinstance(details, dict) else ""
+    POS_VENDA_NUMBER = os.environ.get("CONVERSAPP_POS_VENDA_NUMBER", "+5519982268158")
+    if dest_number and POS_VENDA_NUMBER and dest_number != POS_VENDA_NUMBER:
+        print(f"[WHATSAPP] Ignorando msg para outro número: {dest_number}")
+        return jsonify({"status": "ok", "action": "wrong_number"})
 
     # Extract phone number from details.from or fallbacks
     phone = ""
@@ -3762,10 +3769,15 @@ def whatsapp_webhook():
         phone = content.get("from") or inner.get("from") or inner.get("number") or ""
     phone = re.sub(r'[^\d+]', '', str(phone)).lstrip('+')
 
-    # Extract message text
+    # Extract message text (also check audio transcription)
     message = ""
     if isinstance(content, dict):
         message = content.get("text") or content.get("body") or ""
+        # If audio/voice, use transcription
+        if not message and isinstance(details, dict):
+            transcription = details.get("transcription") or {}
+            if isinstance(transcription, dict):
+                message = transcription.get("text") or ""
     if not message:
         message = inner.get("text") or inner.get("body") or ""
     if not message and isinstance(content, str):
