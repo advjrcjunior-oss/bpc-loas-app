@@ -3902,7 +3902,7 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
 {processo_info}
 {"O CLIENTE QUER CONSULTAR O PROCESSO - siga o PASSO 2 (triagem) do fluxo." if session.get("aguardando_identificacao") else ""}
 
-INSTRUÇÃO OBRIGATÓRIA: Se houver PROCESSO ENCONTRADO acima, você DEVE apresentar os dados imediatamente no formato do PASSO 4. Traduza as movimentações para linguagem simples e informe o cliente. Depois siga o PASSO 5 (encerramento).
+INSTRUÇÃO OBRIGATÓRIA: Se houver PROCESSO ENCONTRADO ou ANDAMENTO ADMINISTRATIVO ENCONTRADO acima, você DEVE apresentar os dados AGORA nesta resposta. Use o formato do PASSO 4 ou PASSO 5 conforme o caso. NÃO diga "vou consultar" ou "um momento" - os dados JÁ ESTÃO AQUI, apresente-os diretamente. Depois pergunte se ficou alguma dúvida.
 """
 
     # Build messages for Claude (with history for context)
@@ -3914,7 +3914,7 @@ INSTRUÇÃO OBRIGATÓRIA: Se houver PROCESSO ENCONTRADO acima, você DEVE aprese
         client_ai = anthropic.Anthropic()
         response = client_ai.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=500,
+            max_tokens=800,
             system=system_msg,
             messages=messages,
         )
