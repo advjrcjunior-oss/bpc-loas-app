@@ -3336,7 +3336,7 @@ CONVERSAPP_CHANNEL_ID = os.environ.get("CONVERSAPP_CHANNEL_ID", "5395dbba-34f9-4
 
 # Business hours (Brazil timezone)
 BOT_HORA_INICIO = 8   # 8h
-BOT_HORA_FIM = 18     # 18h
+BOT_HORA_FIM = 19     # 19h
 
 # Conversation state per phone number
 # Persisted in DB if available, otherwise in-memory
@@ -3489,7 +3489,7 @@ SAUDAÇÃO CONFORME HORÁRIO
 
 BOT_MSG_FORA_HORARIO = """Oi! Aqui é a Ana, da JRC Advocacia.
 
-Agora já saí do escritório, nosso horário é de segunda a sexta, das 8h às 18h.
+Agora já saí do escritório, nosso horário é de segunda a sexta, das 8h às 19h.
 
 Pode deixar sua mensagem que amanhã cedo já te respondo!"""
 
