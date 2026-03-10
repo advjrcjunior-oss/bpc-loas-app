@@ -7,3 +7,6 @@ python-dateutil
 requests
 gunicorn
 psycopg2-binary
+google-auth
+google-auth-oauthlib
+google-api-python-client

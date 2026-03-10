@@ -3593,6 +3593,138 @@ def whatsapp_get_movimentacoes(idprocesso):
     return movs
 
 
+# Gmail integration for INSS administrative status (via Gmail API OAuth2)
+# Credentials stored in env vars to avoid committing secrets
+GMAIL_REFRESH_TOKEN = os.environ.get("GMAIL_REFRESH_TOKEN", "")
+GMAIL_CLIENT_ID = os.environ.get("GMAIL_CLIENT_ID", "")
+GMAIL_CLIENT_SECRET = os.environ.get("GMAIL_CLIENT_SECRET", "")
+
+def _get_gmail_service():
+    """Get authenticated Gmail API service using env var credentials."""
+    if not GMAIL_REFRESH_TOKEN or not GMAIL_CLIENT_ID:
+        # Fallback: try local token file
+        token_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gmail_token.json")
+        if os.path.exists(token_file):
+            with open(token_file) as f:
+                token_data = json.load(f)
+            refresh_token = token_data.get('refresh_token')
+            client_id = token_data.get('client_id')
+            client_secret = token_data.get('client_secret')
+        else:
+            print("[GMAIL] Credenciais não configuradas (GMAIL_REFRESH_TOKEN)")
+            return None
+    else:
+        refresh_token = GMAIL_REFRESH_TOKEN
+        client_id = GMAIL_CLIENT_ID
+        client_secret = GMAIL_CLIENT_SECRET
+
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+
+    creds = Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=["https://www.googleapis.com/auth/gmail.readonly"]
+    )
+
+    # Always refresh to get a valid access token
+    creds.refresh(Request())
+
+    return build('gmail', 'v1', credentials=creds)
+
+
+def whatsapp_buscar_gmail_inss(nome_cliente):
+    """Search Gmail for INSS notifications about a client.
+
+    Uses Gmail API to search jrcandamentos@gmail.com for emails
+    from noreply@inss.gov.br containing the client's name.
+    Returns dict with: nome, protocolo, servico, data, status, corpo
+    """
+    try:
+        service = _get_gmail_service()
+        if not service:
+            return None
+
+        nome_busca = nome_cliente.strip()
+        query = f'from:noreply@inss.gov.br "{nome_busca}"'
+
+        results = service.users().messages().list(
+            userId='me', q=query, maxResults=5
+        ).execute()
+
+        messages = results.get('messages', [])
+        if not messages:
+            print(f"[GMAIL] Nenhum e-mail do INSS para '{nome_busca}'")
+            return None
+
+        # Get most recent email
+        msg = service.users().messages().get(
+            userId='me', id=messages[0]['id'], format='full'
+        ).execute()
+
+        # Extract headers
+        headers = msg.get('payload', {}).get('headers', [])
+        subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '')
+        date = next((h['value'] for h in headers if h['name'] == 'Date'), '')
+
+        # Get body text (snippet is good enough for status extraction)
+        corpo = msg.get('snippet', '')
+
+        # Also try to get full body
+        payload = msg.get('payload', {})
+        body_data = payload.get('body', {}).get('data', '')
+        if not body_data and payload.get('parts'):
+            for part in payload['parts']:
+                if part.get('mimeType') == 'text/plain':
+                    body_data = part.get('body', {}).get('data', '')
+                    break
+                elif part.get('mimeType') == 'text/html' and not body_data:
+                    body_data = part.get('body', {}).get('data', '')
+
+        if body_data:
+            import base64
+            corpo = base64.urlsafe_b64decode(body_data).decode('utf-8', errors='replace')
+
+        info = {
+            "corpo": corpo[:2000],
+            "data_email": date,
+            "assunto": subject,
+            "nome_cliente": nome_cliente,
+        }
+
+        corpo_lower = corpo.lower()
+
+        # Extract protocolo from subject or body
+        proto_match = re.search(r'(?:requerimento|protocolo)[:\s]*(\d[\d./-]+)', subject + ' ' + corpo, re.IGNORECASE)
+        if proto_match:
+            info["protocolo"] = proto_match.group(1).strip()
+
+        # Extract servico
+        serv_match = re.search(r'servi[çc]o[:\s]*([^\n\r<]+)', corpo, re.IGNORECASE)
+        if serv_match:
+            info["servico"] = serv_match.group(1).strip()
+
+        # Extract status from subject or body
+        for status_kw in ["exigência", "exigencia", "indeferido", "deferido",
+                          "em análise", "em analise", "cancelado",
+                          "concluído", "concluido", "cumprida"]:
+            if status_kw in (subject + ' ' + corpo).lower():
+                info["status_inss"] = status_kw.replace("exigencia", "Exigência").replace("em analise", "Em análise").replace("concluido", "Concluído").capitalize()
+                break
+
+        print(f"[GMAIL] Encontrado: {subject[:80]}")
+        return info
+
+    except Exception as e:
+        print(f"[GMAIL] Erro: {e}")
+        traceback.print_exc()
+        return None
+
+
 
 def _get_saudacao():
     """Return greeting based on current Brazil time."""
@@ -3716,8 +3848,27 @@ PROCESSO ENCONTRADO (mais recente de {len(processos)} encontrados):
 {movs_texto or 'Nenhuma movimentação recente.'}
 """
         elif aguardando_id:
-            processo_info = "\nNENHUM PROCESSO ENCONTRADO com esse nome/CPF. Peça para tentar novamente com o nome completo como está no processo."
-            session["aguardando_identificacao"] = False
+            # Not found in LegalMail - try Gmail (INSS administrative)
+            gmail_info = whatsapp_buscar_gmail_inss(msg)
+            if gmail_info:
+                session["aguardando_identificacao"] = False
+                session["gmail_resultado"] = gmail_info
+                processo_info = f"""
+ANDAMENTO ADMINISTRATIVO ENCONTRADO NO GMAIL (e-mail do INSS):
+- Cliente: {gmail_info.get('nome_cliente', '')}
+- Protocolo: {gmail_info.get('protocolo', 'não identificado')}
+- Serviço: {gmail_info.get('servico', 'não identificado')}
+- Status INSS: {gmail_info.get('status_inss', 'não identificado')}
+- Data do e-mail: {gmail_info.get('data_email', '')}
+
+Conteúdo do e-mail (resumo):
+{gmail_info.get('corpo', '')[:500]}
+
+INSTRUÇÃO: Apresente essas informações seguindo o PASSO 5 do fluxo (andamento administrativo). Traduza o status conforme as traduções obrigatórias. Se o status for cancelado, NÃO informe o motivo - encaminhe para a equipe.
+"""
+            else:
+                processo_info = "\nNENHUM PROCESSO ENCONTRADO nem no sistema judicial nem nos e-mails do INSS. Peça para tentar novamente com o nome completo como está no processo ou encaminhe para a equipe."
+                session["aguardando_identificacao"] = False
 
     # If already has a process in session, include it
     elif processo and not processo_info:
