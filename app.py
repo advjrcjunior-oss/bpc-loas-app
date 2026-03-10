@@ -3864,17 +3864,25 @@ PROCESSO ENCONTRADO:
 {movs_texto or 'Nenhuma movimentação recente.'}
 """
             elif len(processos) > 1:
-                # Pick the most recent process by creation date
-                proc = max(processos, key=lambda p: p.get("data_cadastro") or p.get("data_distribuicao") or "")
-                session["processo"] = proc
-                session["aguardando_identificacao"] = False
-                movs = whatsapp_get_movimentacoes(proc.get("idprocessos"))
-                movs_texto = ""
-                for m in movs[:5]:
-                    data_m = (m.get("data_movimentacao") or "")[:10]
-                    titulo = m.get("titulo") or m.get("titulo_movimentacao", "")
-                    movs_texto += f"- {data_m}: {titulo}\n"
-                processo_info = f"""
+                # Check if results are from different clients (different names)
+                nomes_unicos = set((p.get("poloativo_nome") or "").strip().upper() for p in processos)
+                if len(nomes_unicos) > 1:
+                    # Multiple different clients found - ask for full name
+                    session["aguardando_identificacao"] = True
+                    nomes_lista = ", ".join(sorted(nomes_unicos))
+                    processo_info = f"\nMÚLTIPLOS CLIENTES ENCONTRADOS com nomes diferentes: {nomes_lista}. Peça o nome completo ou sobrenome para identificar corretamente."
+                else:
+                    # Same client with multiple processes - pick most recent
+                    proc = max(processos, key=lambda p: p.get("data_cadastro") or p.get("data_distribuicao") or "")
+                    session["processo"] = proc
+                    session["aguardando_identificacao"] = False
+                    movs = whatsapp_get_movimentacoes(proc.get("idprocessos"))
+                    movs_texto = ""
+                    for m in movs[:5]:
+                        data_m = (m.get("data_movimentacao") or "")[:10]
+                        titulo = m.get("titulo") or m.get("titulo_movimentacao", "")
+                        movs_texto += f"- {data_m}: {titulo}\n"
+                    processo_info = f"""
 PROCESSO ENCONTRADO (mais recente de {len(processos)} encontrados):
 - Número: {proc.get('numero_processo', '')}
 - Cliente: {proc.get('poloativo_nome', '')}
