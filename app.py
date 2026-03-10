@@ -3728,6 +3728,8 @@ HORÁRIO ATUAL: {saudacao} (usar esta saudação se for a primeira mensagem)
 PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
 {processo_info}
 {"O CLIENTE QUER CONSULTAR UM PROCESSO - peça o nome completo ou CPF dele para localizar." if session.get("aguardando_identificacao") else ""}
+
+INSTRUÇÃO OBRIGATÓRIA: Se houver PROCESSO ENCONTRADO acima, você DEVE apresentar os dados imediatamente no formato do PASSO 3. NÃO faça perguntas adicionais sobre tipo de benefício, natureza do processo ou qualquer outra coisa. Apenas traduza as movimentações para linguagem simples e informe o cliente.
 """
 
     # Build messages for Claude (with history for context)
