@@ -6,3 +6,4 @@ openpyxl
 python-dateutil
 requests
 gunicorn
+psycopg2-binary

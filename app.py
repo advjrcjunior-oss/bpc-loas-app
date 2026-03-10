@@ -2109,12 +2109,41 @@ import time
 import threading
 import datetime as _dt
 
-# Persistent storage - use /data volume on Railway, local dir otherwise
-DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
+# Persistent storage - PostgreSQL on Railway, JSON files locally
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+USE_DB = bool(DATABASE_URL)
+
+# Local file fallback
+DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 NOTIFICATIONS_FILE = os.path.join(DATA_DIR, "notifications.json")
 PROCESSES_CACHE_FILE = os.path.join(DATA_DIR, "processes_cache.json")
 MONITOR_STATE_FILE = os.path.join(DATA_DIR, "monitor_state.json")
+
+# Initialize PostgreSQL if available
+if USE_DB:
+    import psycopg2
+    import psycopg2.extras
+    def _get_db():
+        return psycopg2.connect(DATABASE_URL)
+    # Create tables on startup
+    try:
+        conn = _get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key TEXT PRIMARY KEY,
+                value JSONB NOT NULL DEFAULT '[]'::jsonb,
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("[DB] PostgreSQL conectado e tabelas criadas")
+    except Exception as e:
+        print(f"[DB] Erro ao conectar PostgreSQL: {e}")
+        USE_DB = False
 
 # Monitor settings
 MONITOR_INTERVAL_MINUTES = 1440  # Check once per day (24h = 1440 min)
@@ -2122,9 +2151,46 @@ _monitor_thread = None
 _monitor_running = False
 
 
+def _db_load(key, default=None):
+    """Load JSON data from PostgreSQL."""
+    if default is None:
+        default = []
+    try:
+        conn = _get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM kv_store WHERE key = %s", (key,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row[0] if row else default
+    except Exception as e:
+        print(f"[DB] Erro ao ler {key}: {e}")
+        return default
+
+
+def _db_save(key, data):
+    """Save JSON data to PostgreSQL."""
+    try:
+        conn = _get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO kv_store (key, value, updated_at) VALUES (%s, %s, NOW())
+            ON CONFLICT (key) DO UPDATE SET value = %s, updated_at = NOW()
+        """, (key, json.dumps(data, ensure_ascii=False), json.dumps(data, ensure_ascii=False)))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[DB] Erro ao salvar {key}: {e}")
+
+
 def _load_json_file(filepath, default=None):
     if default is None:
         default = []
+    # Use DB if available, with filepath as key
+    if USE_DB:
+        key = os.path.basename(filepath).replace(".json", "")
+        return _db_load(key, default)
     if os.path.exists(filepath):
         try:
             with open(filepath, "r", encoding="utf-8") as f:
@@ -2135,6 +2201,10 @@ def _load_json_file(filepath, default=None):
 
 
 def _save_json_file(filepath, data):
+    if USE_DB:
+        key = os.path.basename(filepath).replace(".json", "")
+        _db_save(key, data)
+        return
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
