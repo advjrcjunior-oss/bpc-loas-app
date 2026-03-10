@@ -3743,8 +3743,10 @@ def whatsapp_buscar_gmail_inss(nome_cliente):
         if proto_match:
             info["protocolo"] = proto_match.group(1).strip()
 
-        # Extract servico
-        serv_match = re.search(r'servi[çc]o[:\s]*([^\n\r<]+)', corpo, re.IGNORECASE)
+        # Extract servico (clean HTML first to avoid matching wrong field)
+        corpo_texto = re.sub(r'<[^>]+>', ' ', corpo)
+        corpo_texto = re.sub(r'\s+', ' ', corpo_texto)
+        serv_match = re.search(r'servi[çc]o\s*:\s*(.+?)(?:\s{2,}|Data|Unidade|Status|$)', corpo_texto, re.IGNORECASE)
         if serv_match:
             info["servico"] = serv_match.group(1).strip()
 
