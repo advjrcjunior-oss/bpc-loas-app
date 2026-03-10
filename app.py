@@ -3805,25 +3805,26 @@ def _traduzir_movimentacao(titulo):
 
 
 def _build_resultado_msg(session, processo_info):
-    """Build results message directly in code (no AI call needed)."""
+    """Build results message: try Claude for natural explanation, code fallback if fails."""
+
+    # Collect raw data for both Claude and fallback
+    gmail_info = session.get("gmail_resultado")
+    proc = session.get("processo")
+    dados_raw = ""
+    fallback_msg = ""
 
     # Gmail/INSS administrative result
-    gmail_info = session.get("gmail_resultado")
     if gmail_info and "ANDAMENTO ADMINISTRATIVO" in processo_info:
         status = (gmail_info.get("status_inss") or "não identificado").lower()
         protocolo = gmail_info.get("protocolo", "não identificado")
         servico = gmail_info.get("servico", "")
 
-        # Check if cancelled - escalate to team
-        if status == "cancelado" or "cancelado" in status:
+        if "cancelado" in status:
             return ("Encontrei informações sobre o benefício, mas esse assunto a equipe do escritório "
                     "consegue te ajudar melhor. Vou avisar eles para entrar em contato com você.")
 
-        traducao = _TRADUCOES_INSS.get(status)
-        if not traducao:
-            traducao = f"O status atual no INSS é: {gmail_info.get('status_inss', 'não identificado')}."
+        traducao = _TRADUCOES_INSS.get(status, f"O status atual no INSS é: {gmail_info.get('status_inss', '-')}.")
 
-        # Friendly service name
         servico_upper = servico.upper()
         if "ASSISTENCIAL" in servico_upper or "BPC" in servico_upper or "DEFICI" in servico_upper:
             servico_friendly = "Benefício Assistencial (BPC/LOAS)"
@@ -3831,53 +3832,95 @@ def _build_resultado_msg(session, processo_info):
             servico_friendly = "Aposentadoria"
         elif "AUXÍLIO" in servico_upper or "AUXILIO" in servico_upper:
             servico_friendly = "Auxílio por Incapacidade"
-        elif servico:
-            servico_friendly = servico.title()
         else:
-            servico_friendly = ""
+            servico_friendly = servico.title() if servico else ""
 
         nome = gmail_info.get("nome_cliente", "")
-        msg = f"Encontrei as informações do {nome}!\n\n"
-        msg += f"📋 *Andamento administrativo - INSS*\n\n"
-        msg += f"📌 *Protocolo:* {protocolo}\n"
+        dados_raw = f"""Dados do INSS para o cliente:
+- Nome: {nome}
+- Protocolo: {protocolo}
+- Tipo: {servico_friendly or servico}
+- Status: {gmail_info.get('status_inss', '-')}
+- Tradução do status: {traducao}"""
+
+        # Fallback message (code-built)
+        fallback_msg = f"Encontrei as informações do {nome}!\n\n"
+        fallback_msg += f"📋 *Andamento administrativo - INSS*\n\n"
+        fallback_msg += f"📌 *Protocolo:* {protocolo}\n"
         if servico_friendly:
-            msg += f"📎 *Tipo:* {servico_friendly}\n"
-        msg += f"📊 *Status:* {gmail_info.get('status_inss', '-')}\n\n"
-        msg += f"{traducao}\n\n"
-        msg += "Ficou alguma dúvida ou posso te ajudar com mais alguma coisa?"
-        return msg
+            fallback_msg += f"📎 *Tipo:* {servico_friendly}\n"
+        fallback_msg += f"📊 *Status:* {gmail_info.get('status_inss', '-')}\n\n"
+        fallback_msg += f"{traducao}\n\n"
+        fallback_msg += "Ficou alguma dúvida ou posso te ajudar com mais alguma coisa?"
 
     # Judicial process result
-    proc = session.get("processo")
-    if proc and "PROCESSO ENCONTRADO" in processo_info:
+    elif proc and "PROCESSO ENCONTRADO" in processo_info:
         numero = proc.get("numero_processo", "")
         tribunal = proc.get("tribunal", "")
         cliente = proc.get("poloativo_nome", "")
 
-        # Get last movement and translate
         movs = whatsapp_get_movimentacoes(proc.get("idprocessos"))
-        ultima_mov = ""
+        movs_texto = ""
+        for m in movs[:5]:
+            data_m = (m.get("data_movimentacao") or "")[:10]
+            titulo = m.get("titulo") or m.get("titulo_movimentacao", "")
+            movs_texto += f"- {data_m}: {titulo}\n"
+
+        dados_raw = f"""Dados do processo judicial:
+- Número: {numero}
+- Tribunal: {tribunal}
+- Cliente: {cliente}
+- Classe: {proc.get('nome_classe') or proc.get('abreviatura_classe', '')}
+- Juízo: {proc.get('juizo', '')}
+- Status: {proc.get('inbox_atual', 'Em andamento')}
+Últimas movimentações:
+{movs_texto or 'Nenhuma movimentação recente.'}"""
+
         ultima_data = ""
         traducao_mov = ""
         if movs:
-            m = movs[0]
-            ultima_data = (m.get("data_movimentacao") or "")[:10]
-            ultima_mov = m.get("titulo") or m.get("titulo_movimentacao", "")
-            traducao_mov = _traduzir_movimentacao(ultima_mov)
+            ultima_data = (movs[0].get("data_movimentacao") or "")[:10]
+            titulo = movs[0].get("titulo") or movs[0].get("titulo_movimentacao", "")
+            traducao_mov = _traduzir_movimentacao(titulo)
 
-        msg = "Encontrei o seu processo!\n\n"
-        msg += f"📋 *Andamento do processo*\n\n"
-        msg += f"⚖️ *Processo nº:* {numero}\n"
-        msg += f"🏛️ *Tribunal:* {tribunal}\n"
+        fallback_msg = "Encontrei o seu processo!\n\n"
+        fallback_msg += f"📋 *Andamento do processo*\n\n"
+        fallback_msg += f"⚖️ *Processo nº:* {numero}\n"
+        fallback_msg += f"🏛️ *Tribunal:* {tribunal}\n"
         if ultima_data:
-            msg += f"📅 *Última movimentação:* {ultima_data}\n"
+            fallback_msg += f"📅 *Última movimentação:* {ultima_data}\n"
         if traducao_mov:
-            msg += f"✅ *O que aconteceu:* {traducao_mov}\n"
-        msg += "\nFicou alguma dúvida ou posso te ajudar com mais alguma coisa?"
-        return msg
+            fallback_msg += f"✅ *O que aconteceu:* {traducao_mov}\n"
+        fallback_msg += "\nFicou alguma dúvida ou posso te ajudar com mais alguma coisa?"
 
-    # Fallback
-    return "Não consegui localizar as informações no momento. Vou encaminhar para a equipe do escritório verificar. Eles vão entrar em contato com você."
+    if not dados_raw:
+        return "Não consegui localizar as informações no momento. Vou encaminhar para a equipe do escritório verificar. Eles vão entrar em contato com você."
+
+    # Try Claude for a natural, warm explanation
+    try:
+        client_ai = anthropic.Anthropic()
+        response = client_ai.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=500,
+            system="""Você é Ana, do pós-venda da JRC Advocacia. Formate uma mensagem de WhatsApp com os dados abaixo.
+
+REGRAS:
+- Use emojis e negrito (*texto*) APENAS no resumo dos dados (cabeçalho)
+- Depois do resumo, explique em linguagem simples o que está acontecendo e os próximos passos
+- Tom acolhedor e direto, sem juridiquês
+- Traduza TODAS as movimentações jurídicas para linguagem que qualquer pessoa entenda
+- Termine com "Ficou alguma dúvida ou posso te ajudar com mais alguma coisa?"
+- NÃO invente informações que não estão nos dados
+- Máximo 10 linhas""",
+            messages=[{"role": "user", "content": f"Formate estes dados para o cliente:\n\n{dados_raw}"}],
+        )
+        resposta = response.content[0].text.strip()
+        if resposta and len(resposta) > 20:
+            return resposta
+    except Exception as e:
+        print(f"[BOT] Claude falhou ao formatar resultado, usando fallback: {e}")
+
+    return fallback_msg
 
 
 def _get_saudacao():
