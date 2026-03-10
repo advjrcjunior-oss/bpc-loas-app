@@ -3922,7 +3922,9 @@ PROCESSO ENCONTRADO (mais recente de {len(processos)} encontrados):
             print(f"[BOT] Gmail resultado: {bool(gmail_info)}")
             if gmail_info:
                 session["aguardando_identificacao"] = False
-                session["gmail_resultado"] = gmail_info
+                # Store gmail result without huge HTML body
+                gmail_resultado_limpo = {k: v for k, v in gmail_info.items() if k != 'corpo'}
+                session["gmail_resultado"] = gmail_resultado_limpo
                 # Clean HTML from corpo for Claude
                 corpo_limpo = re.sub(r'<[^>]+>', ' ', gmail_info.get('corpo', ''))
                 corpo_limpo = re.sub(r'\s+', ' ', corpo_limpo).strip()[:300]
@@ -3934,7 +3936,7 @@ ANDAMENTO ADMINISTRATIVO ENCONTRADO NO GMAIL (e-mail do INSS):
 - Status INSS: {gmail_info.get('status_inss', 'não identificado')}
 - Data do e-mail: {gmail_info.get('data_email', '')}
 
-INSTRUÇÃO: Apresente essas informações ao cliente. Use o formato do PASSO 5 (andamento administrativo). Traduza o status conforme as traduções obrigatórias. Se o status for cancelado, NÃO informe o motivo - encaminhe para a equipe.
+INSTRUÇÃO: Apresente essas informações ao cliente de forma clara e simples, sem emojis. Traduza o status conforme as traduções obrigatórias (Exigência = o INSS pediu documentos adicionais). Se o status for cancelado, NÃO informe o motivo - encaminhe para a equipe. Depois pergunte se ficou alguma dúvida.
 """
             else:
                 processo_info = "\nNENHUM PROCESSO ENCONTRADO nem no sistema judicial nem nos e-mails do INSS. Peça para tentar novamente com o nome completo como está no processo ou encaminhe para a equipe."
