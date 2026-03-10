@@ -3724,21 +3724,25 @@ def whatsapp_webhook():
     import json as _json
     print(f"[WHATSAPP] Webhook RAW: {_json.dumps(data, ensure_ascii=False, default=str)[:2000]}")
 
-    # ConversApp real payload format:
-    # { "data": { "eventType": "MESSAGE_RECEIVED", "content": { "text": "...", "direction": "FROM_HUB",
-    #   "sessionId": "...", "details": { "from": "+55...", "to": "+55..." } } } }
-    inner = data.get("data") or {}
+    # ConversApp real payload format (NO "data" wrapper):
+    # { "eventType": "MESSAGE_RECEIVED", "content": { "text": "...", "direction": "FROM_HUB",
+    #   "sessionId": "...", "details": { "from": "+55...", "to": "+55..." } } }
+    # But may also come wrapped: { "data": { "eventType": ..., "content": {...} } }
+    if "eventType" in data or "content" in data:
+        inner = data  # payload is flat (real ConversApp format)
+    else:
+        inner = data.get("data") or data  # wrapped format
     if isinstance(inner, list) and inner:
         inner = inner[0]
 
-    # Event type: inner.eventType or top-level event
+    # Event type
     event_type = inner.get("eventType") or data.get("event") or data.get("type") or ""
 
     # Only process MESSAGE_RECEIVED events
     if event_type not in ("MESSAGE_RECEIVED", "message.received", ""):
         return jsonify({"status": "ok", "action": f"skipped_{event_type}"})
 
-    # Content is nested inside inner.content
+    # Content
     content = inner.get("content") or inner
     if isinstance(content, list) and content:
         content = content[0]
