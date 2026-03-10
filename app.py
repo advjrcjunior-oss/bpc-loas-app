@@ -3851,12 +3851,16 @@ def whatsapp_processar_mensagem(phone, message):
         if palavras_msg and palavras_msg.issubset(palavras_nao_nome):
             msg_parece_nome = False
 
+    print(f"[BOT] aguardando_id={aguardando_id}, is_cpf={is_cpf}, msg_parece_nome={msg_parece_nome}, msg='{msg[:50]}'")
+
     if aguardando_id and (is_cpf or msg_parece_nome):
         # Try to find process
+        print(f"[BOT] Buscando processo para: '{msg}'")
         if is_cpf:
             processos = whatsapp_buscar_processo(cpf=msg)
         else:
             processos = whatsapp_buscar_processo(nome=msg)
+        print(f"[BOT] LegalMail encontrou: {len(processos)} processos")
 
         if processos:
             if len(processos) == 1:
@@ -3987,7 +3991,7 @@ INSTRUÇÃO OBRIGATÓRIA: Os dados do processo/andamento estão acima. Apresente
 HORÁRIO ATUAL: {saudacao} (usar esta saudação se for a primeira mensagem)
 PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
 {processo_info}
-{"O CLIENTE QUER CONSULTAR O PROCESSO. Se ele já indicou que é benefício, INSS, do filho, etc, NÃO pergunte novamente - vá direto pedir o nome completo. Só faça a triagem se realmente não ficou claro." if session.get("aguardando_identificacao") else ""}
+{"O CLIENTE QUER CONSULTAR O PROCESSO. Se ele já indicou que é benefício, INSS, do filho, etc, NÃO pergunte novamente - vá direto pedir o nome completo. Só faça a triagem se realmente não ficou claro. NUNCA diga 'vou consultar' ou 'um momento' - você só pode dizer isso quando os dados já foram encontrados (isso é feito automaticamente pelo sistema)." if session.get("aguardando_identificacao") else ""}
 """
 
     # Build messages for Claude (with history for context)
@@ -4007,6 +4011,13 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
 
         # Save assistant response in history
         historico.append({"role": "assistant", "content": resposta})
+
+        # Auto-detect if bot is asking for name → set aguardando_identificacao
+        resposta_lower = resposta.lower()
+        if any(kw in resposta_lower for kw in ["nome completo", "nome de quem", "me informar o nome", "qual o nome", "qual é o nome", "pode me passar o nome", "me dizer o nome"]):
+            session["aguardando_identificacao"] = True
+            print(f"[BOT] Auto-detectado: bot pediu nome, setando aguardando_identificacao=True")
+
         session["historico"] = historico
         _whatsapp_sessions[phone] = session
 
