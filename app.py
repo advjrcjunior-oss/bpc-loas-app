@@ -3873,10 +3873,36 @@ def whatsapp_webhook():
             import datetime as _dtproc
             log_entry = {"ts": str(_dtproc.datetime.now()), "phone": phone, "msg": message[:100]}
             try:
+                # Send "typing" indicator
+                sid = _whatsapp_sessions.get(phone, {}).get("conversapp_session_id") or session_id
+                if sid:
+                    try:
+                        conversapp_request("post", f"/chat/v1/session/{sid}/typing", json={})
+                    except Exception:
+                        pass
+
+                # Generate AI response
                 resposta = whatsapp_processar_mensagem(phone, message)
                 log_entry["resposta"] = resposta[:200] if resposta else "(vazio)"
+
                 if resposta:
-                    sid = _whatsapp_sessions.get(phone, {}).get("conversapp_session_id") or session_id
+                    # Delay to seem human (30s minus AI processing time)
+                    import time as _time
+                    elapsed = (_dtproc.datetime.now() - _dtproc.datetime.fromisoformat(log_entry["ts"])).total_seconds()
+                    delay = max(0, 30 - elapsed)
+                    if delay > 0:
+                        # Keep sending typing indicator during delay
+                        for _ in range(int(delay // 5)):
+                            if sid:
+                                try:
+                                    conversapp_request("post", f"/chat/v1/session/{sid}/typing", json={})
+                                except Exception:
+                                    pass
+                            _time.sleep(5)
+                        remaining = delay % 5
+                        if remaining > 0:
+                            _time.sleep(remaining)
+
                     log_entry["session_id"] = sid
                     result = whatsapp_send_message(phone, resposta, session_id=sid)
                     log_entry["enviado"] = result
