@@ -5013,15 +5013,16 @@ def whatsapp_webhook():
                             _time.sleep(remaining)
 
                     log_entry["session_id"] = sid
-                    # Smart mode: if client sent audio, respond with audio
+                    # Smart mode: if client sent audio, respond with audio only
                     should_audio = _whatsapp_sessions.get(phone, {}).get("_responder_audio", False)
                     if should_audio and isinstance(resposta, str):
-                        # Send text first, then audio
-                        whatsapp_send_message(phone, resposta, session_id=sid)
                         audio_data = elevenlabs_tts(resposta)
                         if audio_data:
                             conversapp_send_audio(phone, audio_data, session_id=sid)
                             log_entry["audio"] = True
+                        else:
+                            # Fallback to text if TTS fails
+                            whatsapp_send_message(phone, resposta, session_id=sid)
                     else:
                         whatsapp_send_message(phone, resposta, session_id=sid)
                     log_entry["enviado"] = True
