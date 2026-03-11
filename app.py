@@ -3970,14 +3970,17 @@ _TRADUCOES_MOV = {
     "petição inicial distribuída": "Seu processo foi aberto e registrado no sistema da Justiça Federal.",
     "designada audiência": "Foi marcada uma audiência. Em breve o escritório vai te contatar com mais detalhes.",
     "perícia médica agendada": "A Justiça marcou uma perícia médica. O escritório vai te avisar a data assim que confirmar.",
-    "sentença prolatada": "O juiz já deu a decisão no seu processo. O escritório está analisando e vai te informar o resultado.",
-    "sentença": "O juiz já deu a decisão no seu processo. O escritório está analisando e vai te informar o resultado.",
+    "sentença prolatada": "O juiz analisou o seu caso e proferiu a decisão. A sentença é o momento em que o juiz dá o resultado final do processo na primeira instância, dizendo se o pedido foi aceito ou não.",
+    "sentença": "O juiz analisou o seu caso e proferiu a decisão. A sentença é o momento em que o juiz dá o resultado final do processo na primeira instância, dizendo se o pedido foi aceito ou não.",
     "trânsito em julgado": "O processo foi finalizado com decisão definitiva. O escritório vai entrar em contato para explicar os próximos passos.",
     "apelação interposta": "Seu processo está na fase de recurso e aguarda julgamento pelos desembargadores. Essa etapa pode levar alguns meses, mas o escritório está acompanhando.",
     "remetido ao tribunal": "Seu processo está na fase de recurso e aguarda julgamento pelos desembargadores. Essa etapa pode levar alguns meses, mas o escritório está acompanhando.",
     "concluso ao relator": "Seu processo está na fase de recurso e aguarda julgamento pelos desembargadores. Essa etapa pode levar alguns meses, mas o escritório está acompanhando.",
     "incluído em pauta": "Seu processo está na fase de recurso e aguarda julgamento pelos desembargadores. Essa etapa pode levar alguns meses, mas o escritório está acompanhando.",
-    "acórdão publicado": "Seu processo está na fase de recurso e aguarda julgamento pelos desembargadores. Essa etapa pode levar alguns meses, mas o escritório está acompanhando.",
+    "acórdão publicado": "O acórdão é a decisão final do recurso na segunda instância. Isso significa que um grupo de juízes superiores, chamados desembargadores, se reuniu e votou sobre o seu caso. É como uma segunda análise da Justiça.",
+    "decisão interlocutória": "O juiz tomou uma decisão parcial no seu processo. Isso não é o resultado final, é uma decisão sobre algum ponto específico que surgiu durante o andamento. O processo continua seguindo normalmente.",
+    "julgamento antecipado": "O juiz decidiu analisar o seu caso sem precisar de audiência ou perícia, pois entendeu que já tinha informações suficientes para dar a decisão.",
+    "resolução parcial": "O juiz resolveu uma parte do seu processo, mas ainda restam outros pontos a serem decididos. O andamento continua normalmente para as questões restantes.",
 }
 
 # Traduções de status INSS
