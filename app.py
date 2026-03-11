@@ -6222,6 +6222,412 @@ else:
     print("[FOLLOWUP] Follow-up DESATIVADO - ative com FOLLOWUP_ENABLED=true")
 
 
+# ========== SALÁRIO MATERNIDADE - ACOMPANHAMENTO AUTOMÁTICO ==========
+
+MATERNIDADE_ENABLED = os.environ.get("MATERNIDADE_ENABLED", "false").lower() == "true"
+MATERNIDADE_TAG_ID = "36d321f0-9c43-49e2-85d3-ae70aa3ee6b1"  # Tag "salário maternidade"
+MATERNIDADE_GPS_TAG_ID = os.environ.get("MATERNIDADE_GPS_TAG_ID", "")  # Tag "Gerar GPS" - preencher depois
+MATERNIDADE_KEY_NIT = os.environ.get("MATERNIDADE_KEY_NIT", "nit")  # Key do campo NIT no ConversApp
+MATERNIDADE_KEY_DATA_PARTO = os.environ.get("MATERNIDADE_KEY_DATA_PARTO", "data-prevista-do-parto")  # Key do campo data parto
+MATERNIDADE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maternidade_queue.json")
+MATERNIDADE_MAX_DIA = int(os.environ.get("MATERNIDADE_MAX_DIA", "5"))  # Máx mensagens por dia
+
+
+def _maternidade_load():
+    """Load maternity tracking queue from disk."""
+    try:
+        if os.path.exists(MATERNIDADE_FILE):
+            with open(MATERNIDADE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"[MATERNIDADE] Erro ao carregar: {e}")
+    return {}
+
+
+def _maternidade_save(queue):
+    """Save maternity tracking queue to disk."""
+    try:
+        with open(MATERNIDADE_FILE, "w", encoding="utf-8") as f:
+            json.dump(queue, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[MATERNIDADE] Erro ao salvar: {e}")
+
+
+def _maternidade_generate_engagement(entry, tipo="engajamento"):
+    """Generate a personalized engagement message for a maternity client."""
+    try:
+        nome = entry.get("nome", "")
+        data_parto = entry.get("data_parto", "")
+        nit = entry.get("nit", "")
+        tentativas_eng = entry.get("engajamentos_enviados", 0)
+        fase = entry.get("fase", "gestacao")  # gestacao, pre_parto, pos_parto
+
+        if tipo == "gps_aviso":
+            # Notify team about GPS generation
+            return None  # Handled differently
+
+        if tipo == "gps_lembrete":
+            primeiro_nome = nome.split()[0] if nome else ""
+            return f"Oi {primeiro_nome}! Tudo bem com você e o bebê? Passando pra lembrar sobre a guia de pagamento do INSS que te enviamos. É importante pagar antes do vencimento pra garantir seu benefício. Qualquer dúvida me chama!"
+
+        if tipo == "pos_parto":
+            primeiro_nome = nome.split()[0] if nome else ""
+            return f"Oi {primeiro_nome}! Como está o bebê? Quando puder, me envia a certidão de nascimento pra gente dar entrada no seu salário maternidade!"
+
+        # Engagement during pregnancy
+        client_ai = anthropic.Anthropic()
+
+        meses_restantes = ""
+        if data_parto:
+            try:
+                data_p = _dt_followup.date.fromisoformat(data_parto)
+                dias = (data_p - _dt_followup.date.today()).days
+                if dias > 0:
+                    meses_restantes = f"Faltam aproximadamente {dias // 30} meses e {dias % 30} dias para o parto"
+                else:
+                    meses_restantes = f"O parto estava previsto para {data_parto} (já passou)"
+            except Exception:
+                pass
+
+        response = client_ai.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=250,
+            system=f"""Você é Ana, do pós-venda da JRC Advocacia. Precisa enviar uma mensagem de engajamento para uma gestante que é cliente do escritório para o benefício de salário maternidade.
+
+CONTEXTO:
+- Nome: {nome}
+- Data prevista do parto: {data_parto or 'não informada'}
+- {meses_restantes}
+- Mensagens de engajamento já enviadas: {tentativas_eng}
+
+OBJETIVO:
+- Manter o vínculo com a cliente
+- Mostrar que o escritório se importa
+- Diminuir chance de inadimplência
+- NÃO falar de valores, honorários ou pagamento do escritório
+- Pode perguntar como ela está, como está a gestação, se está tudo bem
+
+REGRAS:
+- Mensagem curta (2-3 linhas máximo)
+- Humanizada, como uma pessoa real
+- NÃO use emojis
+- Varie o texto a cada vez (não repita mensagens anteriores)
+- Chame pelo primeiro nome
+- Seja acolhedora e carinhosa
+- Se for perto do parto, deseje tudo de bom
+
+Escreva APENAS a mensagem.""",
+            messages=[{"role": "user", "content": "Gere a mensagem de engajamento."}],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        print(f"[MATERNIDADE] Erro ao gerar mensagem: {e}")
+        primeiro_nome = (entry.get("nome") or "").split()[0] if entry.get("nome") else ""
+        return f"Oi {primeiro_nome}! Tudo bem com você? Passando pra saber como está a gestação. Qualquer dúvida sobre o benefício é só me chamar!"
+
+
+def _maternidade_scan():
+    """Scan ConversApp for maternity clients and update the tracking queue."""
+    hoje = _dt_followup.date.today()
+    queue = _maternidade_load()
+
+    # Fetch all contacts with "salário maternidade" tag
+    contatos = _followup_buscar_contatos_por_tag(MATERNIDADE_TAG_ID)
+    print(f"[MATERNIDADE] Tag 'salário maternidade': {len(contatos)} contatos")
+
+    for contato in contatos:
+        try:
+            contact_id = contato.get("id", "")
+            nome = contato.get("name") or ""
+            phone_raw = ""
+            phone_numbers = contato.get("phoneNumbers") or contato.get("phonenumber") or ""
+            if isinstance(phone_numbers, list) and phone_numbers:
+                phone_raw = phone_numbers[0]
+            elif isinstance(phone_numbers, str):
+                phone_raw = phone_numbers
+            if not phone_raw:
+                phone_raw = contato.get("phoneNumber") or contato.get("phone") or ""
+            phone_clean = re.sub(r'[^\d]', '', str(phone_raw))
+            if not phone_clean or len(phone_clean) < 10:
+                continue
+
+            # Get custom fields
+            custom_fields = contato.get("customFields") or {}
+            nit = ""
+            data_parto = ""
+            if isinstance(custom_fields, dict):
+                nit = custom_fields.get(MATERNIDADE_KEY_NIT, "") or ""
+                data_parto_raw = custom_fields.get(MATERNIDADE_KEY_DATA_PARTO, "") or ""
+                # Try to parse date (could be DD/MM/YYYY or YYYY-MM-DD)
+                if data_parto_raw:
+                    try:
+                        if "/" in data_parto_raw:
+                            parts = data_parto_raw.split("/")
+                            if len(parts) == 3:
+                                data_parto = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+                        elif "-" in data_parto_raw:
+                            data_parto = data_parto_raw[:10]
+                    except Exception:
+                        pass
+            elif isinstance(custom_fields, list):
+                for cf in custom_fields:
+                    key = cf.get("key") or cf.get("name", "")
+                    val = cf.get("value", "")
+                    if key == MATERNIDADE_KEY_NIT:
+                        nit = val
+                    elif key == MATERNIDADE_KEY_DATA_PARTO:
+                        data_parto_raw = val
+                        try:
+                            if "/" in str(data_parto_raw):
+                                parts = str(data_parto_raw).split("/")
+                                if len(parts) == 3:
+                                    data_parto = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+                            elif "-" in str(data_parto_raw):
+                                data_parto = str(data_parto_raw)[:10]
+                        except Exception:
+                            pass
+
+            # Get or create entry
+            entry = queue.get(phone_clean)
+            if not entry:
+                last_session = _followup_get_last_session(contact_id)
+                sid = last_session.get("sessionId") if last_session else None
+                entry = {
+                    "nome": nome,
+                    "phone": phone_clean,
+                    "contact_id": contact_id,
+                    "nit": nit,
+                    "data_parto": data_parto,
+                    "session_id": sid,
+                    "fase": "gestacao",
+                    "criado_em": hoje.isoformat(),
+                    "engajamentos_enviados": 0,
+                    "ultimo_engajamento": None,
+                    "gps_notificado": False,
+                    "gps_enviada": False,
+                    "certidao_pedida": False,
+                    "status": "ativo",
+                }
+            else:
+                # Update fields that might have changed
+                if nit:
+                    entry["nit"] = nit
+                if data_parto:
+                    entry["data_parto"] = data_parto
+                entry["nome"] = nome or entry.get("nome", "")
+
+            # Determine phase based on birth date
+            if data_parto:
+                try:
+                    data_p = _dt_followup.date.fromisoformat(data_parto)
+                    dias_ate_parto = (data_p - hoje).days
+
+                    if dias_ate_parto < -7:
+                        # More than 7 days after due date - post-birth phase
+                        entry["fase"] = "pos_parto"
+                    elif dias_ate_parto <= 30:
+                        # Within 30 days of birth - pre-birth (GPS time!)
+                        entry["fase"] = "pre_parto"
+                    else:
+                        entry["fase"] = "gestacao"
+                except Exception:
+                    pass
+
+            queue[phone_clean] = entry
+        except Exception as e:
+            print(f"[MATERNIDADE] Erro ao processar contato: {e}")
+            continue
+
+    _maternidade_save(queue)
+    return queue
+
+
+def _maternidade_process():
+    """Process maternity queue: send engagement, GPS notifications, birth certificate requests."""
+    hoje = _dt_followup.date.today()
+    queue = _maternidade_scan()
+    enviados = 0
+    resultados = []
+
+    for phone_clean, entry in list(queue.items()):
+        if enviados >= MATERNIDADE_MAX_DIA:
+            break
+        if entry.get("status") != "ativo":
+            continue
+
+        fase = entry.get("fase", "gestacao")
+        ultimo_eng = entry.get("ultimo_engajamento")
+        data_parto = entry.get("data_parto", "")
+        nit = entry.get("nit", "")
+
+        # Don't message more than once per day
+        if ultimo_eng == hoje.isoformat():
+            continue
+
+        mensagem = None
+        acao = ""
+
+        # ===== PRE-PARTO: Notify team to generate GPS =====
+        if fase == "pre_parto" and not entry.get("gps_notificado") and nit:
+            # Tag contact with "Gerar GPS" if tag ID is configured
+            if MATERNIDADE_GPS_TAG_ID:
+                try:
+                    contact_id = entry.get("contact_id")
+                    if contact_id:
+                        # Get current tags
+                        contact_resp = conversapp_request("get", f"/core/v1/contact/{contact_id}")
+                        if contact_resp.status_code == 200:
+                            contact_data = contact_resp.json()
+                            current_tags = contact_data.get("tagIds") or []
+                            if MATERNIDADE_GPS_TAG_ID not in current_tags:
+                                current_tags.append(MATERNIDADE_GPS_TAG_ID)
+                                conversapp_request("put", f"/core/v1/contact/{contact_id}", json={"tagIds": current_tags})
+                                print(f"[MATERNIDADE] Tag 'Gerar GPS' adicionada: {entry.get('nome')}")
+                except Exception as e:
+                    print(f"[MATERNIDADE] Erro ao adicionar tag GPS: {e}")
+
+            # Transfer session to Michelle with context
+            sid = entry.get("session_id")
+            if sid:
+                try:
+                    # Send internal note first
+                    competencia = hoje.strftime("%m/%Y")
+                    note_msg = f"GERAR GPS - Salário Maternidade\nCliente: {entry.get('nome')}\nNIT: {nit}\nCódigo: 1473 (Facultativo Simplificado)\nCompetência: {competencia}\nValor: R$178,31 (11% de R$1.621)\nParto previsto: {data_parto}"
+                    whatsapp_send_message(f"+55{phone_clean}" if not phone_clean.startswith("55") else f"+{phone_clean}", note_msg, session_id=sid)
+                    import time as _t_mat
+                    _t_mat.sleep(3)
+                    conversapp_transfer_session(sid, MICHELLE_USER_ID)
+                    print(f"[MATERNIDADE] GPS notificado e transferido pra Michelle: {entry.get('nome')}")
+                except Exception as e:
+                    print(f"[MATERNIDADE] Erro ao notificar GPS: {e}")
+
+            entry["gps_notificado"] = True
+            acao = "gps_notificado"
+            resultados.append({"phone": phone_clean, "nome": entry.get("nome"), "acao": acao})
+            queue[phone_clean] = entry
+            continue  # Don't send engagement on same cycle as GPS notification
+
+        # ===== PÓS-PARTO: Pedir certidão de nascimento =====
+        if fase == "pos_parto" and not entry.get("certidao_pedida"):
+            mensagem = _maternidade_generate_engagement(entry, tipo="pos_parto")
+            entry["certidao_pedida"] = True
+            acao = "certidao_pedida"
+
+        # ===== ENGAJAMENTO PERIÓDICO (a cada 15 dias) =====
+        elif fase in ("gestacao", "pre_parto"):
+            dias_desde = 999
+            if ultimo_eng:
+                dias_desde = (hoje - _dt_followup.date.fromisoformat(ultimo_eng)).days
+            elif entry.get("criado_em"):
+                dias_desde = (hoje - _dt_followup.date.fromisoformat(entry["criado_em"])).days
+
+            if dias_desde >= 15:
+                # Check if GPS was sent and needs payment follow-up
+                if entry.get("gps_enviada") and not entry.get("gps_paga"):
+                    mensagem = _maternidade_generate_engagement(entry, tipo="gps_lembrete")
+                    acao = "gps_lembrete"
+                else:
+                    mensagem = _maternidade_generate_engagement(entry, tipo="engajamento")
+                    acao = "engajamento"
+
+        # Send message if we have one
+        if mensagem:
+            phone_formatted = f"+55{phone_clean}" if not phone_clean.startswith("55") else f"+{phone_clean}"
+            try:
+                whatsapp_send_message(phone_formatted, mensagem)
+                entry["ultimo_engajamento"] = hoje.isoformat()
+                entry["engajamentos_enviados"] = entry.get("engajamentos_enviados", 0) + 1
+                queue[phone_clean] = entry
+                enviados += 1
+                resultados.append({
+                    "phone": phone_clean,
+                    "nome": entry.get("nome"),
+                    "fase": fase,
+                    "acao": acao,
+                    "mensagem": mensagem[:100]
+                })
+                print(f"[MATERNIDADE] Enviado para {entry.get('nome')}: {mensagem[:80]}")
+                import time as _t_mat2
+                _t_mat2.sleep(_random_fup.randint(30, 60) * 60)  # 30-60 min entre mensagens
+            except Exception as e:
+                print(f"[MATERNIDADE] Erro ao enviar: {e}")
+
+    _maternidade_save(queue)
+    return resultados
+
+
+# Maternity endpoint for manual execution and monitoring
+@app.route("/api/maternidade/fila", methods=["GET"])
+def maternidade_fila():
+    """View the maternity tracking queue."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
+    queue = _maternidade_load()
+    return jsonify({"total": len(queue), "clientes": queue})
+
+
+@app.route("/api/maternidade/executar", methods=["POST", "GET"])
+def maternidade_executar():
+    """Run maternity check manually."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
+    resultados = _maternidade_process()
+    queue = _maternidade_load()
+    return jsonify({
+        "status": "ok",
+        "data": _dt_followup.date.today().isoformat(),
+        "total_fila": len(queue),
+        "resultados": resultados
+    })
+
+
+# Maternity timer (runs alongside follow-up timer)
+def _maternidade_timer_loop():
+    """Background thread for maternity engagement messages."""
+    import time as _time_mat
+    print(f"[MATERNIDADE] Timer iniciado - máx {MATERNIDADE_MAX_DIA} msgs/dia")
+    escaneado_hoje = False
+    ultimo_dia = ""
+
+    while True:
+        try:
+            agora = _dt_followup.datetime.now()
+            hoje_str = agora.date().isoformat()
+            hora = agora.hour
+
+            # Reset daily
+            if ultimo_dia != hoje_str:
+                escaneado_hoje = False
+                ultimo_dia = hoje_str
+
+            # Run once per day, after follow-up (start at 10h to not overlap)
+            if hora >= 10 and not escaneado_hoje:
+                if _is_horario_comercial():
+                    print(f"[MATERNIDADE] Executando check diário...")
+                    escaneado_hoje = True
+                    with app.app_context():
+                        try:
+                            resultados = _maternidade_process()
+                            print(f"[MATERNIDADE] Resultado: {len(resultados)} ações")
+                        except Exception as e:
+                            print(f"[MATERNIDADE] Erro: {e}")
+                            traceback.print_exc()
+
+            # Check every 30 min
+            _time_mat.sleep(1800)
+        except Exception as e:
+            print(f"[MATERNIDADE] Erro no timer: {e}")
+            _time_mat.sleep(3600)
+
+if MATERNIDADE_ENABLED:
+    threading.Thread(target=_maternidade_timer_loop, daemon=True).start()
+    print(f"[MATERNIDADE] Acompanhamento ATIVADO - máx {MATERNIDADE_MAX_DIA} msgs/dia")
+else:
+    print("[MATERNIDADE] Acompanhamento DESATIVADO - ative com MATERNIDADE_ENABLED=true")
+
+
 try:
     _startup()
 except Exception as e:
