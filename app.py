@@ -6143,20 +6143,32 @@ def _followup_send_one(phone_clean):
         # Generate personalized message
         mensagem = _followup_generate_message(entry, conv_msgs)
 
-        # Send
+        # Send - alternate between text and audio
         phone_formatted = f"+55{phone_clean}" if not phone_clean.startswith("55") else f"+{phone_clean}"
-        whatsapp_send_message(phone_formatted, mensagem)
+        tentativas = entry.get("tentativas", 0)
+        usar_audio = (tentativas % 2 == 1) and ELEVENLABS_API_KEY
+        formato = "audio" if usar_audio else "texto"
+
+        if usar_audio:
+            audio_data = elevenlabs_tts(mensagem)
+            if audio_data:
+                conversapp_send_audio(phone_formatted, audio_data)
+            else:
+                whatsapp_send_message(phone_formatted, mensagem)
+                formato = "texto (fallback)"
+        else:
+            whatsapp_send_message(phone_formatted, mensagem)
 
         # Update entry
-        entry["tentativas"] = entry.get("tentativas", 0) + 1
+        entry["tentativas"] = tentativas + 1
         entry["ultimo_followup"] = hoje.isoformat()
         if entry.get("data_prometida"):
             entry["data_prometida"] = None
         queue[phone_clean] = entry
         _followup_save(queue)
 
-        print(f"[FOLLOWUP] ✓ Enviado para {entry.get('nome', phone_clean)}: {mensagem[:80]}")
-        return {"phone": phone_clean, "nome": entry.get("nome"), "mensagem": mensagem[:150], "tentativa": entry["tentativas"]}
+        print(f"[FOLLOWUP] ✓ Enviado ({formato}) para {entry.get('nome', phone_clean)}: {mensagem[:80]}")
+        return {"phone": phone_clean, "nome": entry.get("nome"), "mensagem": mensagem[:150], "tentativa": entry["tentativas"], "formato": formato}
     except Exception as e:
         print(f"[FOLLOWUP] ✗ Erro ao enviar para {phone_clean}: {e}")
         return None
@@ -6530,13 +6542,28 @@ def _maternidade_process():
                     mensagem = _maternidade_generate_engagement(entry, tipo="engajamento")
                     acao = "engajamento"
 
-        # Send message if we have one
+        # Send message if we have one - alternate between text and audio
         if mensagem:
             phone_formatted = f"+55{phone_clean}" if not phone_clean.startswith("55") else f"+{phone_clean}"
             try:
-                whatsapp_send_message(phone_formatted, mensagem)
+                eng_count = entry.get("engajamentos_enviados", 0)
+                # Alternate: even = text, odd = audio (starts with text)
+                usar_audio = (eng_count % 2 == 1) and ELEVENLABS_API_KEY
+                formato = "audio" if usar_audio else "texto"
+
+                if usar_audio:
+                    audio_data = elevenlabs_tts(mensagem)
+                    if audio_data:
+                        conversapp_send_audio(phone_formatted, audio_data)
+                    else:
+                        # Fallback to text if TTS fails
+                        whatsapp_send_message(phone_formatted, mensagem)
+                        formato = "texto (fallback)"
+                else:
+                    whatsapp_send_message(phone_formatted, mensagem)
+
                 entry["ultimo_engajamento"] = hoje.isoformat()
-                entry["engajamentos_enviados"] = entry.get("engajamentos_enviados", 0) + 1
+                entry["engajamentos_enviados"] = eng_count + 1
                 queue[phone_clean] = entry
                 enviados += 1
                 resultados.append({
@@ -6544,9 +6571,10 @@ def _maternidade_process():
                     "nome": entry.get("nome"),
                     "fase": fase,
                     "acao": acao,
+                    "formato": formato,
                     "mensagem": mensagem[:100]
                 })
-                print(f"[MATERNIDADE] Enviado para {entry.get('nome')}: {mensagem[:80]}")
+                print(f"[MATERNIDADE] Enviado ({formato}) para {entry.get('nome')}: {mensagem[:80]}")
                 import time as _t_mat2
                 _t_mat2.sleep(_random_fup.randint(30, 60) * 60)  # 30-60 min entre mensagens
             except Exception as e:
