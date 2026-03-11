@@ -2265,7 +2265,7 @@ if USE_DB:
         USE_DB = False
 
 # Monitor settings
-MONITOR_INTERVAL_MINUTES = 1440  # Check once per day (24h = 1440 min)
+MONITOR_INTERVAL_MINUTES = int(os.environ.get("MONITOR_INTERVAL_MINUTES", "360"))  # Check every 6h (survives Railway restarts)
 _monitor_thread = None
 _monitor_running = False
 
