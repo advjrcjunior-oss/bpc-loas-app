@@ -4990,6 +4990,63 @@ _bot_debug_log = []  # Store last 20 bot processing logs
 
 # ========== FOLLOW-UP ENDPOINTS ==========
 
+# Tags que o sistema monitora para follow-up de documentos
+FOLLOWUP_TAGS = {
+    "a0f8ef0b-e237-41b1-9ed2-96f39597db1c": "Sem laudo",
+    "a3e6bd4b-5786-4e1c-b61a-0dbfcf957f7c": "Falta a atualização do laudo",
+    "ccc686c8-efa0-451a-8935-75181c4be14b": "Sem CAD ÚNICO",
+    "fd305e71-bed1-4b2e-85b5-dd141b515eda": "Falta cad",
+}
+
+# Map tag names to document names for follow-up messages
+TAG_TO_DOC = {
+    "Sem laudo": "laudo médico",
+    "Falta a atualização do laudo": "laudo médico atualizado",
+    "Sem CAD ÚNICO": "inscrição no CadÚnico",
+    "Falta cad": "inscrição no CadÚnico",
+}
+
+
+def _followup_buscar_contatos_por_tag(tag_id):
+    """Fetch all contacts that have a specific tag via POST /core/v1/contact/filter."""
+    contatos = []
+    page = 1
+    try:
+        while True:
+            resp = conversapp_request("post", "/core/v1/contact/filter", json={
+                "tagIds": [tag_id],
+                "pageSize": 50,
+                "pageNumber": page,
+            })
+            if resp.status_code != 200:
+                print(f"[FOLLOWUP] Erro ao buscar contatos por tag: {resp.status_code}")
+                break
+            data = resp.json()
+            items = data.get("items", [])
+            contatos.extend(items)
+            if not data.get("hasMorePages", False):
+                break
+            page += 1
+            if page > 20:  # Safety limit
+                break
+    except Exception as e:
+        print(f"[FOLLOWUP] Erro ao buscar contatos: {e}")
+    return contatos
+
+
+def _followup_get_last_session(contact_id):
+    """Get the most recent session for a contact."""
+    try:
+        resp = conversapp_request("get", f"/chat/v1/session?contactId={contact_id}&pageSize=1&orderBy=createdat&orderDirection=Descending")
+        if resp.status_code == 200:
+            items = resp.json().get("items", [])
+            if items:
+                return items[0]
+    except Exception as e:
+        print(f"[FOLLOWUP] Erro ao buscar sessão: {e}")
+    return None
+
+
 @app.route("/api/followup/fila", methods=["GET"])
 def followup_fila():
     """View the follow-up queue."""
@@ -5034,22 +5091,97 @@ def followup_remover():
 
 @app.route("/api/followup/executar", methods=["POST", "GET"])
 def followup_executar():
-    """Run the follow-up check - sends messages to clients with due follow-ups."""
+    """Run follow-up: scan ConversApp tags + local queue, send personalized messages."""
     token = request.args.get("token", "")
     if token != "jrc2026debug":
         return jsonify({"error": "unauthorized"}), 401
 
-    queue = _followup_load()
     hoje = _dt_followup.date.today()
+    queue = _followup_load()
     resultados = []
+    contatos_processados = set()
 
+    # ===== FASE 1: Buscar contatos por tag no ConversApp =====
+    for tag_id, tag_nome in FOLLOWUP_TAGS.items():
+        doc_nome = TAG_TO_DOC.get(tag_nome, "documentos pendentes")
+        contatos = _followup_buscar_contatos_por_tag(tag_id)
+        print(f"[FOLLOWUP] Tag '{tag_nome}': {len(contatos)} contatos encontrados")
+
+        for contato in contatos:
+            try:
+                contact_id = contato.get("id", "")
+                nome = contato.get("name") or ""
+                phone_numbers = contato.get("phoneNumbers") or contato.get("phonenumber") or ""
+                # Extract phone - can be string or list
+                phone_raw = ""
+                if isinstance(phone_numbers, list) and phone_numbers:
+                    phone_raw = phone_numbers[0]
+                elif isinstance(phone_numbers, str):
+                    phone_raw = phone_numbers
+                if not phone_raw:
+                    phone_raw = contato.get("phoneNumber") or contato.get("phone") or ""
+
+                phone_clean = re.sub(r'[^\d]', '', str(phone_raw))
+                if not phone_clean or len(phone_clean) < 10:
+                    continue
+
+                # Skip if already processed in this run
+                if phone_clean in contatos_processados:
+                    # But collect the doc for this contact
+                    if phone_clean in queue:
+                        existing_docs = queue[phone_clean].get("docs_pendentes", [])
+                        if doc_nome not in existing_docs:
+                            existing_docs.append(doc_nome)
+                            queue[phone_clean]["docs_pendentes"] = existing_docs
+                    continue
+                contatos_processados.add(phone_clean)
+
+                # Check/create entry in local queue
+                entry = queue.get(phone_clean)
+                if not entry:
+                    # New contact from tag - add to queue
+                    # Get last session for conversation context
+                    last_session = _followup_get_last_session(contact_id)
+                    sid = last_session.get("sessionId") if last_session else None
+                    entry = {
+                        "nome": nome,
+                        "phone": phone_clean,
+                        "contact_id": contact_id,
+                        "docs_pendentes": [doc_nome],
+                        "data_prometida": None,
+                        "session_id": sid,
+                        "contexto": "",
+                        "criado_em": hoje.isoformat(),
+                        "atualizado_em": hoje.isoformat(),
+                        "tentativas": 0,
+                        "ultimo_followup": None,
+                        "status": "pendente",
+                        "tags": [tag_nome],
+                    }
+                    queue[phone_clean] = entry
+                else:
+                    # Existing entry - add this doc if not already there
+                    existing_docs = entry.get("docs_pendentes", [])
+                    if doc_nome not in existing_docs:
+                        existing_docs.append(doc_nome)
+                        entry["docs_pendentes"] = existing_docs
+                    existing_tags = entry.get("tags", [])
+                    if tag_nome not in existing_tags:
+                        existing_tags.append(tag_nome)
+                        entry["tags"] = existing_tags
+                    queue[phone_clean] = entry
+
+            except Exception as e:
+                print(f"[FOLLOWUP] Erro ao processar contato: {e}")
+                continue
+
+    # ===== FASE 2: Processar fila e enviar follow-ups =====
     for phone_clean, entry in list(queue.items()):
         try:
             status = entry.get("status", "pendente")
             if status != "pendente":
                 continue
 
-            # Check if it's time to follow up
             data_prometida = entry.get("data_prometida")
             ultimo_followup = entry.get("ultimo_followup")
             tentativas = entry.get("tentativas", 0)
@@ -5065,33 +5197,48 @@ def followup_executar():
                     enviar = True
                     motivo = f"data prometida: {data_prometida}"
             else:
-                # No promised date - follow up based on days since creation/last follow-up
                 ref_date = ultimo_followup or criado_em
                 dias_desde = (hoje - _dt_followup.date.fromisoformat(ref_date)).days
-                if tentativas == 0 and dias_desde >= 3:
+                if tentativas == 0 and dias_desde >= 1:
+                    # First contact: next day after tag was added
                     enviar = True
-                    motivo = f"3 dias sem resposta"
+                    motivo = "primeira cobrança"
                 elif tentativas == 1 and dias_desde >= 3:
                     enviar = True
-                    motivo = f"2º lembrete (+3 dias)"
-                elif tentativas >= 2 and dias_desde >= 4:
+                    motivo = "2º lembrete (+3 dias)"
+                elif tentativas == 2 and dias_desde >= 4:
                     enviar = True
-                    motivo = f"3º+ lembrete (+4 dias)"
+                    motivo = "3º lembrete (+4 dias)"
+                elif tentativas >= 3 and dias_desde >= 5:
+                    enviar = True
+                    motivo = f"{tentativas+1}º lembrete (+5 dias)"
 
             # Don't follow up more than once per day
             if ultimo_followup == hoje.isoformat():
                 enviar = False
                 motivo = "já contatado hoje"
 
-            # Max 5 attempts before escalating
+            # Max 5 attempts - escalate to Michelle
             if tentativas >= 5:
                 entry["status"] = "escalar"
                 queue[phone_clean] = entry
-                resultados.append({"phone": phone_clean, "nome": entry.get("nome"), "acao": "escalar", "motivo": "5 tentativas sem sucesso"})
+                resultados.append({
+                    "phone": phone_clean,
+                    "nome": entry.get("nome"),
+                    "docs": entry.get("docs_pendentes"),
+                    "acao": "escalar",
+                    "motivo": "5 tentativas sem sucesso - escalar para Michelle"
+                })
                 continue
 
             if not enviar:
-                resultados.append({"phone": phone_clean, "nome": entry.get("nome"), "acao": "aguardar", "motivo": motivo or "ainda não é hora"})
+                resultados.append({
+                    "phone": phone_clean,
+                    "nome": entry.get("nome"),
+                    "acao": "aguardar",
+                    "motivo": motivo or "ainda não é hora",
+                    "tentativas": tentativas
+                })
                 continue
 
             # Read conversation history for context
@@ -5103,25 +5250,27 @@ def followup_executar():
             # Generate personalized message
             mensagem = _followup_generate_message(entry, conv_msgs)
 
-            # Send message via pós-venda number
+            # Send message
             phone_formatted = f"+55{phone_clean}" if not phone_clean.startswith("55") else f"+{phone_clean}"
             try:
                 whatsapp_send_message(phone_formatted, mensagem)
                 entry["tentativas"] = tentativas + 1
                 entry["ultimo_followup"] = hoje.isoformat()
-                # After promised date, clear it so next follow-ups use interval logic
                 if data_prometida:
                     entry["data_prometida"] = None
                 queue[phone_clean] = entry
                 resultados.append({
                     "phone": phone_clean,
                     "nome": entry.get("nome"),
+                    "docs": entry.get("docs_pendentes"),
                     "acao": "mensagem_enviada",
                     "tentativa": tentativas + 1,
                     "motivo": motivo,
-                    "mensagem": mensagem[:100]
+                    "mensagem": mensagem[:150]
                 })
-                print(f"[FOLLOWUP] Mensagem enviada para {phone_clean}: {mensagem[:80]}")
+                print(f"[FOLLOWUP] Mensagem enviada para {phone_clean} ({entry.get('nome')}): {mensagem[:80]}")
+                import time as _time_fup
+                _time_fup.sleep(10)  # Space out messages to seem natural
             except Exception as e:
                 resultados.append({"phone": phone_clean, "nome": entry.get("nome"), "acao": "erro", "motivo": str(e)})
 
@@ -5129,7 +5278,19 @@ def followup_executar():
             resultados.append({"phone": phone_clean, "acao": "erro", "motivo": str(e)})
 
     _followup_save(queue)
-    return jsonify({"status": "ok", "data": hoje.isoformat(), "total_fila": len(queue), "resultados": resultados})
+
+    # Count stats
+    enviados = sum(1 for r in resultados if r.get("acao") == "mensagem_enviada")
+    aguardando = sum(1 for r in resultados if r.get("acao") == "aguardar")
+    escalar = sum(1 for r in resultados if r.get("acao") == "escalar")
+
+    return jsonify({
+        "status": "ok",
+        "data": hoje.isoformat(),
+        "total_fila": len(queue),
+        "resumo": {"enviados": enviados, "aguardando": aguardando, "escalar": escalar},
+        "resultados": resultados
+    })
 
 @app.route("/api/whatsapp/pausar", methods=["POST", "GET"])
 def whatsapp_pausar():
@@ -5834,6 +5995,55 @@ def _startup():
         print(f"Monitor automático ativado (verifica a cada {MONITOR_INTERVAL_MINUTES} min)")
     else:
         print("AVISO: LEGALMAIL_API_KEY não configurada - monitor desativado")
+
+# ========== FOLLOW-UP AUTOMÁTICO (TIMER DIÁRIO) ==========
+FOLLOWUP_ENABLED = os.environ.get("FOLLOWUP_ENABLED", "false").lower() == "true"
+FOLLOWUP_HORA = int(os.environ.get("FOLLOWUP_HORA", "9"))  # Hora do dia pra rodar (padrão 9h)
+
+def _followup_timer_loop():
+    """Background thread that runs follow-up check once a day at the configured hour."""
+    import time as _time_timer
+    print(f"[FOLLOWUP] Timer automático iniciado - roda todo dia às {FOLLOWUP_HORA}h")
+    ultimo_dia_executado = None
+
+    while True:
+        try:
+            agora = _dt_followup.datetime.now()
+            hoje_str = agora.date().isoformat()
+
+            # Run once per day at the configured hour
+            if agora.hour >= FOLLOWUP_HORA and ultimo_dia_executado != hoje_str:
+                # Check if it's business hours
+                if _is_horario_comercial():
+                    print(f"[FOLLOWUP] Executando follow-up automático ({hoje_str} {agora.hour}h)")
+                    ultimo_dia_executado = hoje_str
+
+                    # Use the app context to run the follow-up
+                    with app.test_request_context(f"/api/followup/executar?token=jrc2026debug"):
+                        try:
+                            result = followup_executar()
+                            result_data = result.get_json() if hasattr(result, 'get_json') else {}
+                            enviados = result_data.get("resumo", {}).get("enviados", 0)
+                            print(f"[FOLLOWUP] Resultado: {enviados} mensagens enviadas")
+                        except Exception as e:
+                            print(f"[FOLLOWUP] Erro na execução automática: {e}")
+                            traceback.print_exc()
+                else:
+                    # Outside business hours, wait
+                    pass
+
+            # Check every 30 minutes
+            _time_timer.sleep(1800)
+        except Exception as e:
+            print(f"[FOLLOWUP] Erro no timer: {e}")
+            _time_timer.sleep(3600)  # Wait 1h on error
+
+if FOLLOWUP_ENABLED:
+    threading.Thread(target=_followup_timer_loop, daemon=True).start()
+    print(f"[FOLLOWUP] Follow-up automático ATIVADO - roda às {FOLLOWUP_HORA}h")
+else:
+    print("[FOLLOWUP] Follow-up automático DESATIVADO - ative com FOLLOWUP_ENABLED=true")
+
 
 try:
     _startup()
