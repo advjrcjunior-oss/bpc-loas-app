@@ -3341,6 +3341,38 @@ BOT_HORA_FIM = 21     # 21h (temporário para teste)
 # Conversation state per phone number
 # Persisted in DB if available, otherwise in-memory
 _whatsapp_sessions = {}
+_whatsapp_locks = {}  # Per-phone threading locks to prevent race conditions
+_whatsapp_locks_lock = threading.Lock()  # Lock for accessing _whatsapp_locks
+_processed_msg_ids = set()  # Track processed message IDs for deduplication
+_session_last_activity = {}  # Track last activity per phone for cleanup
+
+
+def _get_phone_lock(phone):
+    """Get or create a threading lock for a specific phone number."""
+    with _whatsapp_locks_lock:
+        if phone not in _whatsapp_locks:
+            _whatsapp_locks[phone] = threading.Lock()
+        return _whatsapp_locks[phone]
+
+
+def _cleanup_old_sessions():
+    """Remove sessions inactive for more than 24 hours."""
+    from datetime import datetime, timedelta
+    cutoff = datetime.now() - timedelta(hours=24)
+    phones_to_remove = []
+    for phone, last_time in list(_session_last_activity.items()):
+        if last_time < cutoff:
+            phones_to_remove.append(phone)
+    for phone in phones_to_remove:
+        _whatsapp_sessions.pop(phone, None)
+        _session_last_activity.pop(phone, None)
+        with _whatsapp_locks_lock:
+            _whatsapp_locks.pop(phone, None)
+    if phones_to_remove:
+        print(f"[BOT] Limpou {len(phones_to_remove)} sessões inativas")
+    # Also trim dedup set if too large
+    if len(_processed_msg_ids) > 1000:
+        _processed_msg_ids.clear()
 
 BOT_SYSTEM_PROMPT = """Você é Ana, do pós-venda da JRC Advocacia.
 
@@ -3920,7 +3952,12 @@ REGRAS:
         )
         resposta = response.content[0].text.strip()
         if resposta and len(resposta) > 20:
-            return resposta
+            # Strip unwanted greetings that Claude may add despite instructions
+            import re as _re_clean
+            resposta = _re_clean.sub(r'^(Oi[,!]?\s*\S*[!]?\s*[👋🤗😊]?\s*\n*)', '', resposta).strip()
+            resposta = _re_clean.sub(r'^(Olá[,!]?\s*\S*[!]?\s*[👋🤗😊]?\s*\n*)', '', resposta).strip()
+            if resposta and len(resposta) > 20:
+                return resposta
     except Exception as e:
         print(f"[BOT] Claude falhou ao formatar resultado, usando fallback: {e}")
 
@@ -4136,8 +4173,66 @@ PROCESSO DO CLIENTE (já identificado):
 
     # If client wants to check process but hasn't identified yet
     if wants_processo and not processo and not processo_info:
-        session["aguardando_identificacao"] = True
-        processo_info = "\nO CLIENTE QUER CONSULTAR O PROCESSO. Se ele já indicou que é benefício, INSS, do filho, etc, NÃO pergunte novamente - vá direto pedir o nome completo. Só faça a triagem se realmente não ficou claro."
+        # Try to extract a name embedded in the message (e.g., "processo do João Silva")
+        nome_embutido = None
+        nome_match = re.search(r'(?:processo|benefício|beneficio|andamento)\s+(?:do|da|de|del)\s+(.+)', msg, re.IGNORECASE)
+        if nome_match:
+            candidato = nome_match.group(1).strip().rstrip('?!.')
+            # Check it's not just keywords
+            palavras_cand = set(candidato.lower().split())
+            if not palavras_cand.issubset(palavras_nao_nome) and len(candidato) > 3:
+                nome_embutido = candidato
+
+        if nome_embutido:
+            # Name found in message - search directly
+            print(f"[BOT] Nome embutido detectado: '{nome_embutido}'")
+            session["aguardando_identificacao"] = True
+            # Rerun search logic with extracted name
+            user_texto = " ".join(h.get("content", "") for h in historico if h.get("role") == "user").lower()
+            ctx_inss = any(kw in user_texto for kw in ["inss", "benefício", "beneficio", "bpc", "loas"])
+
+            gmail_info_emb = None
+            proc_emb = None
+
+            if ctx_inss:
+                gmail_info_emb = whatsapp_buscar_gmail_inss(nome_embutido)
+
+            if not gmail_info_emb:
+                processos_emb = whatsapp_buscar_processo(nome=nome_embutido)
+                if processos_emb:
+                    nomes_u = set((p.get("poloativo_nome") or "").strip().upper() for p in processos_emb)
+                    if len(nomes_u) == 1:
+                        proc_emb = max(processos_emb, key=lambda p: p.get("data_cadastro") or p.get("data_distribuicao") or "")
+                    elif len(processos_emb) == 1:
+                        proc_emb = processos_emb[0]
+
+                if not proc_emb and not ctx_inss:
+                    gmail_info_emb = whatsapp_buscar_gmail_inss(nome_embutido)
+
+            if gmail_info_emb:
+                session["aguardando_identificacao"] = False
+                session.pop("contexto_inss", None)
+                gmail_resultado_limpo = {k: v for k, v in gmail_info_emb.items() if k != 'corpo'}
+                session["gmail_resultado"] = gmail_resultado_limpo
+                processo_info = f"\nANDAMENTO ADMINISTRATIVO ENCONTRADO NO GMAIL (e-mail do INSS):\n- Cliente: {gmail_info_emb.get('nome_cliente', '')}\n- Protocolo: {gmail_info_emb.get('protocolo', 'não identificado')}\n- Serviço: {gmail_info_emb.get('servico', 'não identificado')}\n- Status INSS: {gmail_info_emb.get('status_inss', 'não identificado')}\n- Data do e-mail: {gmail_info_emb.get('data_email', '')}"
+            elif proc_emb:
+                session["processo"] = proc_emb
+                session["aguardando_identificacao"] = False
+                session.pop("contexto_inss", None)
+                movs = whatsapp_get_movimentacoes(proc_emb.get("idprocessos"))
+                session["_movimentacoes"] = movs
+                movs_texto = ""
+                for m in movs[:5]:
+                    data_m = (m.get("data_movimentacao") or "")[:10]
+                    titulo = m.get("titulo") or m.get("titulo_movimentacao", "")
+                    movs_texto += f"- {data_m}: {titulo}\n"
+                processo_info = f"\nPROCESSO ENCONTRADO:\n- Número: {proc_emb.get('numero_processo', '')}\n- Cliente: {proc_emb.get('poloativo_nome', '')}\n- Tribunal: {proc_emb.get('tribunal', '')}\n- Status: {proc_emb.get('inbox_atual', 'Em andamento')}\nÚltimas movimentações:\n{movs_texto or 'Nenhuma movimentação recente.'}"
+            else:
+                session["aguardando_identificacao"] = True
+                processo_info = "\nO CLIENTE QUER CONSULTAR O PROCESSO. Se ele já indicou que é benefício, INSS, do filho, etc, NÃO pergunte novamente - vá direto pedir o nome completo. Só faça a triagem se realmente não ficou claro."
+        else:
+            session["aguardando_identificacao"] = True
+            processo_info = "\nO CLIENTE QUER CONSULTAR O PROCESSO. Se ele já indicou que é benefício, INSS, do filho, etc, NÃO pergunte novamente - vá direto pedir o nome completo. Só faça a triagem se realmente não ficou claro."
     # If aguardando_id but message wasn't a name (was a keyword like "inss", "benefício")
     elif aguardando_id and not processo_info and not msg_parece_nome and not is_cpf:
         session["aguardando_identificacao"] = True
@@ -4309,6 +4404,24 @@ def whatsapp_webhook():
     if not session_id:
         session_id = inner.get("sessionId") or data.get("sessionId")
 
+    # Deduplication: skip if we already processed this message
+    msg_id = (content.get("id") or inner.get("id") or data.get("id") or "") if isinstance(content, dict) else ""
+    if not msg_id and phone and message:
+        # Create synthetic ID from phone + message + timestamp (approximate dedup)
+        import hashlib
+        msg_id = hashlib.md5(f"{phone}:{message[:50]}:{str(data.get('timestamp', ''))}".encode()).hexdigest()
+    if msg_id and msg_id in _processed_msg_ids:
+        print(f"[WHATSAPP] Mensagem duplicada ignorada: {msg_id[:20]}")
+        return jsonify({"status": "ok", "action": "duplicate"})
+    if msg_id:
+        _processed_msg_ids.add(msg_id)
+
+    # Periodic cleanup of old sessions
+    from datetime import datetime as _dt_cleanup
+    _session_last_activity[phone] = _dt_cleanup.now()
+    if len(_session_last_activity) > 50:
+        _cleanup_old_sessions()
+
     if phone and message:
         print(f"[WHATSAPP] De {phone}: {message[:100]}")
 
@@ -4320,6 +4433,8 @@ def whatsapp_webhook():
 
         # Process in background thread to not block webhook response
         def _process():
+            phone_lock = _get_phone_lock(phone)
+            phone_lock.acquire()  # Wait if another message from same phone is processing
             import datetime as _dtproc
             log_entry = {"ts": str(_dtproc.datetime.now()), "phone": phone, "msg": message[:100]}
             try:
@@ -4395,6 +4510,8 @@ def whatsapp_webhook():
                 log_entry["erro"] = str(e)
                 print(f"[WHATSAPP] Erro: {e}")
                 traceback.print_exc()
+            finally:
+                phone_lock.release()  # Always release lock
             _bot_debug_log.append(log_entry)
             if len(_bot_debug_log) > 20:
                 _bot_debug_log.pop(0)
