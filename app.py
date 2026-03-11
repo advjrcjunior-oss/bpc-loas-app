@@ -3628,26 +3628,31 @@ def _conversapp_auto_fill(phone, session):
         proc = session.get("processo")
         gmail = session.get("gmail_resultado")
 
+        # ConversApp field keys (from /core/v1/contact/custom-field)
+        KEY_PROCESSO = "n-de-processo"
+        KEY_TIPO = "tipo-inss-ou-judicia"
+        KEY_STATUS = "status-"
+        KEY_CPF = "086-344-453-99"
+
         if proc:
             numero = proc.get("numero_processo", "")
-            # Only fill if not already set
-            if numero and not existing_fields.get("n_de_processo"):
-                custom_fields["n_de_processo"] = numero
-            if not existing_fields.get("tipo"):
-                custom_fields["tipo"] = "Judicial"
+            if numero and not existing_fields.get(KEY_PROCESSO):
+                custom_fields[KEY_PROCESSO] = numero
+            if not existing_fields.get(KEY_TIPO):
+                custom_fields[KEY_TIPO] = "Judicial"
             status = proc.get("inbox_atual", "")
             if status:
-                custom_fields["status"] = status
+                custom_fields[KEY_STATUS] = status
 
         elif gmail:
             protocolo = gmail.get("protocolo", "")
-            if protocolo and not existing_fields.get("n_de_processo"):
-                custom_fields["n_de_processo"] = protocolo
-            if not existing_fields.get("tipo"):
-                custom_fields["tipo"] = "INSS"
+            if protocolo and not existing_fields.get(KEY_PROCESSO):
+                custom_fields[KEY_PROCESSO] = protocolo
+            if not existing_fields.get(KEY_TIPO):
+                custom_fields[KEY_TIPO] = "INSS"
             status_inss = gmail.get("status_inss", "")
             if status_inss:
-                custom_fields["status"] = status_inss
+                custom_fields[KEY_STATUS] = status_inss
 
         if custom_fields:
             conversapp_update_contact(contact_id, {"customFields": custom_fields})
@@ -3667,10 +3672,10 @@ def _conversapp_load_context(phone):
         custom_fields = contact.get("customFields") or {}
         nome = contact.get("name") or ""
 
-        # Check if we have useful data
-        processo_num = custom_fields.get("n_de_processo")
-        tipo = custom_fields.get("tipo")
-        cpf = custom_fields.get("cpf_cnpj") or custom_fields.get("cpf")
+        # Check if we have useful data (keys from ConversApp custom fields)
+        processo_num = custom_fields.get("n-de-processo")
+        tipo = custom_fields.get("tipo-inss-ou-judicia")
+        cpf = custom_fields.get("086-344-453-99")
 
         if not processo_num and not cpf:
             return None  # No useful data to pre-fill
