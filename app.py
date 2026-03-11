@@ -2243,26 +2243,47 @@ MONITOR_STATE_FILE = os.path.join(DATA_DIR, "monitor_state.json")
 if USE_DB:
     import psycopg2
     import psycopg2.extras
+    print(f"[DB] DATABASE_URL encontrada, tentando conectar...")
+    print(f"[DB] URL prefix: {DATABASE_URL[:40]}...")
+
     def _get_db():
-        return psycopg2.connect(DATABASE_URL)
-    # Create tables on startup
-    try:
-        conn = _get_db()
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS kv_store (
-                key TEXT PRIMARY KEY,
-                value JSONB NOT NULL DEFAULT '[]'::jsonb,
-                updated_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        conn.commit()
-        cur.close()
-        conn.close()
-        print("[DB] PostgreSQL conectado e tabelas criadas")
-    except Exception as e:
-        print(f"[DB] Erro ao conectar PostgreSQL: {e}")
+        """Connect to PostgreSQL with SSL fallback."""
+        try:
+            return psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        except Exception:
+            # Try with sslmode=require (Railway may need it)
+            return psycopg2.connect(DATABASE_URL, connect_timeout=10, sslmode='require')
+
+    # Create tables on startup - retry up to 3 times
+    _db_connected = False
+    for _attempt in range(3):
+        try:
+            conn = _get_db()
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS kv_store (
+                    key TEXT PRIMARY KEY,
+                    value JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            conn.commit()
+            cur.close()
+            conn.close()
+            print(f"[DB] PostgreSQL conectado e tabelas criadas (tentativa {_attempt+1})")
+            _db_connected = True
+            break
+        except Exception as e:
+            print(f"[DB] Tentativa {_attempt+1}/3 falhou: {type(e).__name__}: {e}")
+            import time as _time_mod
+            _time_mod.sleep(2)
+
+    if not _db_connected:
+        print(f"[DB] ERRO CRITICO: Nao conseguiu conectar ao PostgreSQL apos 3 tentativas!")
+        print(f"[DB] FALLBACK para JSON local - dados NAO persistem entre deploys!")
         USE_DB = False
+    else:
+        print(f"[DB] USE_DB = True - dados persistem no PostgreSQL")
 
 # Monitor settings
 MONITOR_INTERVAL_MINUTES = int(os.environ.get("MONITOR_INTERVAL_MINUTES", "360"))  # Check every 6h (survives Railway restarts)
@@ -3826,7 +3847,8 @@ def health_check():
         "database_url_set": bool(DATABASE_URL),
         "use_db": USE_DB,
     }
-    # Test DB connection
+    # Test DB connection - try even if USE_DB is False to show the real error
+    result["database_url_preview"] = DATABASE_URL[:50] + "..." if DATABASE_URL else "empty"
     if USE_DB:
         try:
             conn = _get_db()
@@ -3840,7 +3862,19 @@ def health_check():
         except Exception as e:
             result["db_status"] = f"error: {e}"
     else:
-        result["db_status"] = "not_configured"
+        # Try to connect now to show the actual error
+        result["db_status"] = "disabled_at_startup"
+        if DATABASE_URL:
+            try:
+                import psycopg2 as _pg2
+                conn = _pg2.connect(DATABASE_URL, connect_timeout=5)
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+                cur.close()
+                conn.close()
+                result["db_test_now"] = "SUCCESS - connection works! But USE_DB was set to False at startup."
+            except Exception as e:
+                result["db_test_now"] = f"FAILED: {type(e).__name__}: {e}"
     # Test AI
     try:
         client_ai = anthropic.Anthropic(api_key=api_key, timeout=30.0)
