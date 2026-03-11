@@ -6280,8 +6280,42 @@ def _maternidade_generate_engagement(entry, tipo="engajamento"):
         fase = entry.get("fase", "gestacao")  # gestacao, pre_parto, pos_parto
 
         if tipo == "gps_aviso":
-            # Notify team about GPS generation
-            return None  # Handled differently
+            return None
+
+        if tipo == "pre_gps":
+            primeiro_nome = nome.split()[0] if nome else ""
+            meses_rest = ""
+            if data_parto:
+                try:
+                    dias = (_dt_followup.date.fromisoformat(data_parto) - _dt_followup.date.today()).days
+                    if dias > 30:
+                        meses_rest = f"faltam cerca de {dias // 30} meses"
+                    elif dias > 0:
+                        meses_rest = f"faltam {dias} dias"
+                except Exception:
+                    pass
+            client_ai = anthropic.Anthropic()
+            response = client_ai.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=200,
+                system=f"""Você é Ana, do pós-venda da JRC Advocacia. Precisa avisar uma gestante que o parto está se aproximando e que o escritório vai gerar a guia de pagamento do INSS (GPS) pra ela.
+
+Nome: {primeiro_nome}
+Parto previsto: {data_parto} ({meses_rest})
+
+A mensagem deve:
+- Ser curta (2-3 linhas)
+- Perguntar como ela está
+- Avisar que vão enviar a guia de pagamento do INSS em breve
+- Explicar que é importante pagar pra garantir o salário maternidade
+- Dizer que a Michelle vai enviar a guia
+- Sem emojis
+- Humanizada
+
+Escreva APENAS a mensagem.""",
+                messages=[{"role": "user", "content": "Gere a mensagem."}],
+            )
+            return response.content[0].text.strip()
 
         if tipo == "gps_lembrete":
             primeiro_nome = nome.split()[0] if nome else ""
@@ -6503,16 +6537,28 @@ def _maternidade_process():
                 except Exception as e:
                     print(f"[MATERNIDADE] Erro ao adicionar tag GPS: {e}")
 
-            # Create INTERNAL NOTE in the conversation (only team sees it, not the client)
+            # Send friendly message to the client about the payment guide
+            phone_formatted = f"+55{phone_clean}" if not phone_clean.startswith("55") else f"+{phone_clean}"
+            primeiro_nome = (entry.get("nome") or "").split()[0] if entry.get("nome") else ""
+            msg_cliente = _maternidade_generate_engagement(entry, tipo="pre_gps")
+            if not msg_cliente:
+                msg_cliente = f"Oi {primeiro_nome}! Tudo bem? O parto está se aproximando e precisamos gerar a sua guia de pagamento do INSS pra garantir o salário maternidade. A Michelle do nosso escritório vai te enviar a guia em breve!"
             sid = entry.get("session_id")
+            try:
+                whatsapp_send_message(phone_formatted, msg_cliente, session_id=sid)
+            except Exception:
+                pass
+
+            # Create INTERNAL NOTE in the conversation (only team sees it, not the client)
             if sid:
                 try:
+                    import time as _t_mat
+                    _t_mat.sleep(3)
                     competencia = hoje.strftime("%m/%Y")
                     note_text = f"⚠️ GERAR GPS - Salário Maternidade\n\nCliente: {entry.get('nome')}\nNIT: {nit}\nCódigo: 1473 (Facultativo Simplificado)\nCompetência: {competencia}\nValor: R$178,31 (11% de R$1.621)\nParto previsto: {data_parto}\n\nGerar pelo site: meu.inss.gov.br > Emissão de GPS"
                     conversapp_request("post", f"/chat/v1/session/{sid}/note", json={"text": note_text})
-                    print(f"[MATERNIDADE] Nota interna criada na conversa: {entry.get('nome')}")
+                    print(f"[MATERNIDADE] Nota interna + mensagem enviadas: {entry.get('nome')}")
 
-                    import time as _t_mat
                     _t_mat.sleep(2)
                     # Transfer session to Michelle so she sees the note
                     conversapp_transfer_session(sid, MICHELLE_USER_ID)
