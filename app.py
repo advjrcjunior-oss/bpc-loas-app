@@ -6298,19 +6298,22 @@ def _maternidade_generate_engagement(entry, tipo="engajamento"):
             response = client_ai.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=200,
-                system=f"""Você é Ana, do pós-venda da JRC Advocacia. Precisa avisar uma gestante que o parto está se aproximando e que o escritório vai gerar a guia de pagamento do INSS (GPS) pra ela.
+                system=f"""Você é Ana, do pós-venda da JRC Advocacia. Precisa avisar uma gestante que o escritório vai gerar a guia de pagamento do INSS (GPS) pra ela pagar e garantir o salário maternidade.
 
 Nome: {primeiro_nome}
 Parto previsto: {data_parto} ({meses_rest})
 
+IMPORTANTE: Com apenas 1 contribuição antes do parto ela já garante o benefício. Quanto antes pagar, melhor.
+
 A mensagem deve:
 - Ser curta (2-3 linhas)
 - Perguntar como ela está
-- Avisar que vão enviar a guia de pagamento do INSS em breve
-- Explicar que é importante pagar pra garantir o salário maternidade
+- Avisar que vão enviar a guia de pagamento do INSS pra ela
+- Explicar que é importante pagar o quanto antes pra garantir o benefício
 - Dizer que a Michelle vai enviar a guia
 - Sem emojis
 - Humanizada
+- NÃO dizer "o parto está se aproximando" se ainda faltam muitos meses
 
 Escreva APENAS a mensagem.""",
                 messages=[{"role": "user", "content": "Gere a mensagem."}],
@@ -6467,7 +6470,7 @@ def _maternidade_scan():
                     entry["data_parto"] = data_parto
                 entry["nome"] = nome or entry.get("nome", "")
 
-            # Determine phase based on birth date
+            # Determine phase based on birth date and GPS status
             if data_parto:
                 try:
                     data_p = _dt_followup.date.fromisoformat(data_parto)
@@ -6476,10 +6479,11 @@ def _maternidade_scan():
                     if dias_ate_parto < -7:
                         # More than 7 days after due date - post-birth phase
                         entry["fase"] = "pos_parto"
-                    elif dias_ate_parto <= 30:
-                        # Within 30 days of birth - pre-birth (GPS time!)
+                    elif not entry.get("gps_notificado"):
+                        # GPS not generated yet - priority! Generate ASAP
                         entry["fase"] = "pre_parto"
                     else:
+                        # GPS already notified - engagement until birth
                         entry["fase"] = "gestacao"
                 except Exception:
                     pass
