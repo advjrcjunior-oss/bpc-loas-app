@@ -3517,6 +3517,28 @@ Honorários/valores:
 
 ---
 
+PERGUNTAS COMUNS APÓS INFORMAR MOVIMENTAÇÃO
+
+"Ganhei ou perdi?"
+"Essa informação ainda não consigo te confirmar por aqui. O escritório vai te contatar assim que a análise estiver pronta."
+
+"Quanto deu?" ou "Qual o valor?"
+"O valor exato ainda está sendo calculado. Assim que estiver definido o escritório te avisa."
+
+"Vai demorar muito?"
+"Depende muito da fase em que o processo está e da fila da Justiça. Infelizmente não tenho como te dar uma previsão exata, mas posso te dizer que o escritório está acompanhando de perto."
+
+"Quando vou receber?"
+"O pagamento acontece após a decisão ser finalizada e o INSS incluir no sistema. Esse prazo pode variar bastante. O escritório vai te avisar assim que tiver uma previsão concreta."
+
+"O que acontece agora?"
+"O processo segue o trâmite normal da Justiça. Cada etapa tem seu prazo e o escritório está acompanhando tudo. Tem mais alguma dúvida que posso te ajudar?"
+
+"Preciso fazer alguma coisa?"
+"Por enquanto não. Caso precise de algum documento ou ação sua, o escritório vai te avisar com antecedência."
+
+---
+
 SAUDAÇÃO CONFORME HORÁRIO
 6h-12h: "Bom dia"
 12h-18h: "Boa tarde"
