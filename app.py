@@ -3539,6 +3539,162 @@ def conversapp_request(method, endpoint, **kwargs):
     return getattr(requests, method)(url, headers=headers, timeout=30, **kwargs)
 
 
+def conversapp_get_contact(phone):
+    """Get contact data from ConversApp by phone number."""
+    try:
+        # Normalize phone: ensure it has country code
+        phone_clean = re.sub(r'[^\d+]', '', str(phone)).lstrip('+')
+        if not phone_clean.startswith('55'):
+            phone_clean = '55' + phone_clean
+        resp = conversapp_request("get", f"/core/v1/contact/phonenumber/+{phone_clean}?IncludeDetails=CustomFields,Tags")
+        if resp.status_code == 200:
+            data = resp.json()
+            print(f"[CONVERSAPP] Contato encontrado: {data.get('name', '?')}")
+            return data
+        else:
+            print(f"[CONVERSAPP] Contato não encontrado para +{phone_clean}: {resp.status_code}")
+            return None
+    except Exception as e:
+        print(f"[CONVERSAPP] Erro ao buscar contato: {e}")
+        return None
+
+
+def conversapp_update_contact(contact_id, updates):
+    """Update contact fields in ConversApp.
+
+    updates dict can contain:
+    - customFields: {"key": "value"} for CPF, processo, tipo, status
+    - tagIds: ["tag-id-1", ...] for labels
+    - annotation: "text" for internal notes
+    """
+    try:
+        # Always specify which fields we're updating
+        fields = ["CustomFields"]
+        if "tagIds" in updates:
+            fields.append("Tags")
+        if "annotation" in updates:
+            fields.append("Annotation")
+
+        body = {"fields": fields, **updates}
+        resp = conversapp_request("put", f"/core/v1/contact/{contact_id}", json=body)
+        if resp.status_code in (200, 201):
+            print(f"[CONVERSAPP] Contato {contact_id} atualizado: {list(updates.keys())}")
+            return True
+        else:
+            print(f"[CONVERSAPP] Erro ao atualizar contato: {resp.status_code} {resp.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"[CONVERSAPP] Erro ao atualizar: {e}")
+        return False
+
+
+def conversapp_get_custom_fields():
+    """List all custom field definitions to get their keys."""
+    try:
+        resp = conversapp_request("get", "/core/v1/contact/custom-field")
+        if resp.status_code == 200:
+            return resp.json()
+        return []
+    except Exception:
+        return []
+
+
+def conversapp_get_tags():
+    """List all available tags."""
+    try:
+        resp = conversapp_request("get", "/core/v1/tag")
+        if resp.status_code == 200:
+            return resp.json()
+        return []
+    except Exception:
+        return []
+
+
+def _conversapp_auto_fill(phone, session):
+    """Auto-fill ConversApp contact fields after finding process/INSS data."""
+    try:
+        contact = conversapp_get_contact(phone)
+        if not contact:
+            print(f"[CONVERSAPP] Auto-fill: contato não encontrado para {phone}")
+            return
+
+        contact_id = contact.get("id")
+        if not contact_id:
+            return
+
+        custom_fields = {}
+        existing_fields = contact.get("customFields") or {}
+
+        proc = session.get("processo")
+        gmail = session.get("gmail_resultado")
+
+        if proc:
+            numero = proc.get("numero_processo", "")
+            # Only fill if not already set
+            if numero and not existing_fields.get("n_de_processo"):
+                custom_fields["n_de_processo"] = numero
+            if not existing_fields.get("tipo"):
+                custom_fields["tipo"] = "Judicial"
+            status = proc.get("inbox_atual", "")
+            if status:
+                custom_fields["status"] = status
+
+        elif gmail:
+            protocolo = gmail.get("protocolo", "")
+            if protocolo and not existing_fields.get("n_de_processo"):
+                custom_fields["n_de_processo"] = protocolo
+            if not existing_fields.get("tipo"):
+                custom_fields["tipo"] = "INSS"
+            status_inss = gmail.get("status_inss", "")
+            if status_inss:
+                custom_fields["status"] = status_inss
+
+        if custom_fields:
+            conversapp_update_contact(contact_id, {"customFields": custom_fields})
+            print(f"[CONVERSAPP] Auto-fill para {phone}: {custom_fields}")
+    except Exception as e:
+        print(f"[CONVERSAPP] Erro auto-fill: {e}")
+
+
+def _conversapp_load_context(phone):
+    """Load contact data from ConversApp to pre-fill session context.
+    Returns dict with known data or None."""
+    try:
+        contact = conversapp_get_contact(phone)
+        if not contact:
+            return None
+
+        custom_fields = contact.get("customFields") or {}
+        nome = contact.get("name") or ""
+
+        # Check if we have useful data
+        processo_num = custom_fields.get("n_de_processo")
+        tipo = custom_fields.get("tipo")
+        cpf = custom_fields.get("cpf_cnpj") or custom_fields.get("cpf")
+
+        if not processo_num and not cpf:
+            return None  # No useful data to pre-fill
+
+        context = {
+            "nome": nome,
+            "processo_num": processo_num,
+            "tipo": tipo,
+            "cpf": cpf,
+            "contact_id": contact.get("id"),
+        }
+
+        # Get tags
+        tags = contact.get("tags") or []
+        tag_names = [t.get("name", "") for t in tags] if isinstance(tags, list) else []
+        context["tags"] = tag_names
+
+        print(f"[CONVERSAPP] Contexto carregado para {phone}: nome={nome}, processo={processo_num}, tipo={tipo}")
+        return context
+    except Exception as e:
+        print(f"[CONVERSAPP] Erro ao carregar contexto: {e}")
+        return None
+
+
 def whatsapp_send_message(phone, text, session_id=None):
     """Send a WhatsApp message via Helena CRM API."""
     if not CONVERSAPP_API_TOKEN:
@@ -4009,6 +4165,31 @@ def whatsapp_processar_mensagem(phone, message):
     # Reset "fora_horario" flag when in business hours
     session.pop("fora_horario_enviado", None)
 
+    # On first message of a new session, load context from ConversApp
+    is_new_session = len(session.get("historico", [])) == 0
+    if is_new_session and not session.get("_conversapp_loaded"):
+        conversapp_ctx = _conversapp_load_context(phone)
+        if conversapp_ctx:
+            session["_conversapp_context"] = conversapp_ctx
+            # If we have a process number, try to pre-load it
+            proc_num = conversapp_ctx.get("processo_num")
+            tipo = conversapp_ctx.get("tipo")
+            cpf = conversapp_ctx.get("cpf")
+            if proc_num and tipo == "Judicial":
+                # Search by process number in LegalMail cache
+                processos = whatsapp_buscar_processo(nome=conversapp_ctx.get("nome"))
+                if processos:
+                    # Find the one matching the stored number
+                    for p in processos:
+                        if p.get("numero_processo") == proc_num:
+                            session["processo"] = p
+                            break
+                    if not session.get("processo"):
+                        session["processo"] = processos[0]
+            elif tipo == "INSS" and conversapp_ctx.get("nome"):
+                session["contexto_inss"] = True
+        session["_conversapp_loaded"] = True
+
     # Keep conversation history (last 10 messages for context)
     historico = session.get("historico", [])
     historico.append({"role": "user", "content": msg})
@@ -4173,6 +4354,60 @@ PROCESSO DO CLIENTE (já identificado):
 """
 
     # If client wants to check process but hasn't identified yet
+    # First check: do we already know this client from ConversApp?
+    conversapp_ctx = session.get("_conversapp_context")
+    if wants_processo and not processo and not processo_info and conversapp_ctx:
+        ctx_nome = conversapp_ctx.get("nome", "")
+        ctx_tipo = conversapp_ctx.get("tipo")
+        ctx_proc_num = conversapp_ctx.get("processo_num")
+        print(f"[BOT] Cliente conhecido do ConversApp: {ctx_nome}, tipo={ctx_tipo}, proc={ctx_proc_num}")
+
+        if ctx_nome and len(ctx_nome) > 3:
+            session["aguardando_identificacao"] = True
+            gmail_info_ctx = None
+            proc_ctx = None
+
+            if ctx_tipo == "INSS":
+                gmail_info_ctx = whatsapp_buscar_gmail_inss(ctx_nome)
+
+            if not gmail_info_ctx:
+                processos_ctx = whatsapp_buscar_processo(nome=ctx_nome)
+                if processos_ctx:
+                    # If we have the stored process number, find exact match
+                    if ctx_proc_num:
+                        for p in processos_ctx:
+                            if p.get("numero_processo") == ctx_proc_num:
+                                proc_ctx = p
+                                break
+                    if not proc_ctx:
+                        nomes_u = set((p.get("poloativo_nome") or "").strip().upper() for p in processos_ctx)
+                        if len(nomes_u) == 1:
+                            proc_ctx = max(processos_ctx, key=lambda p: p.get("data_cadastro") or p.get("data_distribuicao") or "")
+                        elif len(processos_ctx) == 1:
+                            proc_ctx = processos_ctx[0]
+
+                if not proc_ctx and ctx_tipo != "INSS":
+                    gmail_info_ctx = whatsapp_buscar_gmail_inss(ctx_nome)
+
+            if gmail_info_ctx:
+                session["aguardando_identificacao"] = False
+                session.pop("contexto_inss", None)
+                gmail_resultado_limpo = {k: v for k, v in gmail_info_ctx.items() if k != 'corpo'}
+                session["gmail_resultado"] = gmail_resultado_limpo
+                processo_info = f"\nANDAMENTO ADMINISTRATIVO ENCONTRADO NO GMAIL (e-mail do INSS):\n- Cliente: {gmail_info_ctx.get('nome_cliente', '')}\n- Protocolo: {gmail_info_ctx.get('protocolo', 'não identificado')}\n- Serviço: {gmail_info_ctx.get('servico', 'não identificado')}\n- Status INSS: {gmail_info_ctx.get('status_inss', 'não identificado')}\n- Data do e-mail: {gmail_info_ctx.get('data_email', '')}"
+            elif proc_ctx:
+                session["processo"] = proc_ctx
+                session["aguardando_identificacao"] = False
+                session.pop("contexto_inss", None)
+                movs = whatsapp_get_movimentacoes(proc_ctx.get("idprocessos"))
+                session["_movimentacoes"] = movs
+                movs_texto = ""
+                for m in movs[:5]:
+                    data_m = (m.get("data_movimentacao") or "")[:10]
+                    titulo = m.get("titulo") or m.get("titulo_movimentacao", "")
+                    movs_texto += f"- {data_m}: {titulo}\n"
+                processo_info = f"\nPROCESSO ENCONTRADO:\n- Número: {proc_ctx.get('numero_processo', '')}\n- Cliente: {proc_ctx.get('poloativo_nome', '')}\n- Tribunal: {proc_ctx.get('tribunal', '')}\n- Status: {proc_ctx.get('inbox_atual', 'Em andamento')}\nÚltimas movimentações:\n{movs_texto or 'Nenhuma movimentação recente.'}"
+
     if wants_processo and not processo and not processo_info:
         # Try to extract a name embedded in the message (e.g., "processo do João Silva")
         nome_embutido = None
@@ -4251,6 +4486,10 @@ PROCESSO DO CLIENTE (já identificado):
         historico.append({"role": "assistant", "content": msg_resultado})
         session["historico"] = historico
         _whatsapp_sessions[phone] = session
+
+        # Auto-fill ConversApp contact fields in background
+        threading.Thread(target=_conversapp_auto_fill, args=(phone, session), daemon=True).start()
+
         return [msg_consulta, msg_resultado]
 
     # No data found - use Claude for conversation (triagem, saudação, etc.)
@@ -4583,6 +4822,30 @@ def whatsapp_test_gmail():
         return jsonify({"found": bool(result), "result": result})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/whatsapp/conversapp-fields")
+def whatsapp_conversapp_fields():
+    """List ConversApp custom fields and tags (to discover key names)."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
+    fields = conversapp_get_custom_fields()
+    tags = conversapp_get_tags()
+    return jsonify({"custom_fields": fields, "tags": tags})
+
+
+@app.route("/api/whatsapp/conversapp-contact")
+def whatsapp_conversapp_contact():
+    """Look up a contact in ConversApp by phone number."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
+    phone = request.args.get("phone", "")
+    if not phone:
+        return jsonify({"error": "Informe ?phone=..."}), 400
+    contact = conversapp_get_contact(phone)
+    return jsonify({"found": bool(contact), "contact": contact})
 
 
 @app.route("/api/whatsapp/setup-webhook", methods=["POST"])
