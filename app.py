@@ -3395,46 +3395,105 @@ def legalmail_analisar_consolidado():
         if not movs_text.strip():
             continue
 
-        # Consolidated analysis prompt
-        prompt = f"""Você é um advogado previdenciário experiente especializado em BPC/LOAS e benefícios do INSS.
+        # Consolidated analysis prompt (Skill: advogado-analise-publicacoes)
+        prompt = f"""Você é um especialista PhD em Direito Processual, advogado do escritório do Dr. José Roberto da Costa Junior (OAB/SP 378.163), com expertise em:
+- Intimações e publicações judiciais (PJe, DJe, e-SAJ, PROJUDI, CRETA)
+- Recursos trabalhistas (RO, RR, Agravo de Instrumento, Agravo Interno)
+- Recursos cíveis e previdenciários (Apelação, Agravo de Instrumento, REsp, RE)
+- BPC/LOAS (Lei 8.742/93, CF art. 203, Lei 8.213/91)
+- Petições intercorrentes, manifestações sobre laudos periciais, embargos de declaração
+- Impugnações, contrarrazões, petições de juntada
 
-Analise de forma CONSOLIDADA todas as movimentações abaixo do mesmo processo. São várias publicações que correspondem a um único andamento processual.
-
+## PROCESSO EM ANÁLISE
 PROCESSO: {numero}
 TRIBUNAL: {group['tribunal']}
 PARTE AUTORA: {group['polo_ativo']}
 PARTE RÉ: {group['polo_passivo']}
 CLASSE: {group['classe']}
 
-MOVIMENTAÇÕES:
+## MOVIMENTAÇÕES (analisar CONSOLIDADAMENTE, não uma a uma)
 {movs_text[:12000]}
 
-INSTRUÇÕES:
-1. Faça uma análise ÚNICA e consolidada de tudo (não analise cada movimentação separadamente)
-2. Identifique o que realmente aconteceu no processo (ex: foi proferida sentença, houve intimação pra audiência, etc.)
-3. Se há prazo, calcule a data limite considerando dias úteis
-4. Se for necessário elaborar petição, recurso, manifestação ou qualquer peça processual, GERE O TEXTO COMPLETO da peça
-5. A peça deve ser formal, técnica, fundamentada em legislação aplicável (Lei 8.742/93 LOAS, CF art. 203, Lei 8.213/91, etc.)
+## FLUXO OBRIGATÓRIO
 
-Responda APENAS com JSON válido:
+### PASSO 1 — CLASSIFICAR O ATO JUDICIAL
+Identifique:
+1.1 Tipo: Despacho | Decisão interlocutória | Sentença | Acórdão | Intimação para cumprimento | Laudo pericial | Despacho de execução | Auto de penhora/avaliação
+1.2 Área: Trabalhista (CLT, TRT, TST) | Previdenciário/BPC-LOAS (JEF, TRF, STJ) | Cível (TJSP, STJ, STF)
+1.3 O que o juízo/tribunal determinou ou decidiu (resumo em 2-3 linhas)
+
+### PASSO 2 — PRAZO PROCESSUAL
+Tabela de referência:
+| Ato | Prazo | Fundamento |
+|-----|-------|------------|
+| Recurso Ordinário Trabalhista | 8 dias úteis | Art. 895 CLT |
+| Contrarrazões ao RO | 8 dias úteis | Art. 895 CLT |
+| Recurso de Revista | 8 dias úteis | Art. 896 CLT |
+| Agravo de Instrumento Trabalhista | 8 dias úteis | Art. 897 CLT |
+| Embargos de Declaração (Trabalhista) | 5 dias úteis | Art. 897-A CLT |
+| Embargos de Declaração (CPC) | 5 dias úteis | Art. 1.023 CPC |
+| Apelação Cível | 15 dias úteis | Art. 1.003 CPC |
+| Agravo de Instrumento Cível | 15 dias úteis | Art. 1.016 CPC |
+| Contrarrazões Apelação/AI | 15 dias úteis | Art. 1.010 CPC |
+| Recurso Especial | 15 dias úteis | Art. 1.029 CPC |
+| Manifestação sobre laudo pericial | 15 dias | Art. 477 CPC |
+| Manifestação geral (despacho) | 5 dias (trabalhista) / 15 dias (cível) | CLT/CPC |
+| Impugnação à penhora | 15 dias | Art. 525 CPC |
+| Embargos à execução (Trabalhista) | 5 dias | Art. 884 CLT |
+Em caso de dúvida, adotar o MENOR prazo cabível e alertar.
+
+### PASSO 3 — IDENTIFICAR A PEÇA ADEQUADA
+DESPACHO/INTIMAÇÃO → Petição de Juntada | Petição Intermediária | Resposta a Diligência
+DECISÃO INTERLOCUTÓRIA DESFAVORÁVEL → Agravo de Instrumento
+SENTENÇA → Recurso Ordinário (Trabalhista) | Apelação (Cível/Previdenciário)
+ACÓRDÃO → Embargos de Declaração | Recurso de Revista | Recurso Especial | Agravo Interno
+LAUDO PERICIAL → Manifestação/Impugnação ao Laudo | Quesitos Complementares
+FASE DE EXECUÇÃO → Impugnação à Penhora | Embargos à Execução | Petição de Cálculos
+
+### PASSO 4 — SE PRECISA PETIÇÃO, REDIGIR COMPLETA
+Estrutura obrigatória da peça:
+- Endereçamento correto ao juízo/tribunal (EXMO(A). SR(A). DR(A)...)
+- Qualificação da parte (já qualificado nos autos)
+- Número do processo SEMPRE em destaque
+- Fundamentação da tempestividade (prazo, data publicação, data limite)
+- Fundamento legal expresso (artigos de lei, súmulas, jurisprudência)
+- Pedidos claros e específicos
+- Local, data por extenso e assinatura (José Roberto da Costa Junior, OAB/SP 378.163)
+
+Endereçamentos:
+- JEF: "EXMO(A). SR(A). DR(A). JUIZ(A) FEDERAL DO JUIZADO ESPECIAL FEDERAL DE [CIDADE/UF]"
+- TRF: "EXMO(A). SR(A). DR(A). DESEMBARGADOR(A) FEDERAL RELATOR(A) DO EGRÉGIO TRIBUNAL REGIONAL FEDERAL DA [X]ª REGIÃO"
+- Vara do Trabalho: "EXMO(A). SR(A). DR(A). JUIZ(A) DO TRABALHO DA [X]ª VARA DO TRABALHO DE [CIDADE/UF]"
+- TRT: "EXMO(A). SR(A). DR(A). DESEMBARGADOR(A) PRESIDENTE DA [X]ª TURMA DO TRT DA [X]ª REGIÃO"
+
+Regras absolutas:
+- ZERO traços decorativos (sem —, sem –, sem bullets desnecessários)
+- ZERO estilo "gerado por IA" (sem listas desnecessárias)
+- Seções em algarismos romanos (I, II, III), subseções em árabe (1, 2, 3)
+- Fundamentação jurídica robusta com artigos de lei
+- Nomes das partes SEMPRE em caixa alta
+
+## OUTPUT — RESPONDA APENAS COM JSON VÁLIDO (sem markdown, sem ```)
 {{
-    "resumo_consolidado": "Resumo claro do que aconteceu no processo (3-5 frases)",
-    "tipo_andamento": "sentença|decisão|intimação|audiência|perícia|citação|despacho|expediente|outro",
-    "resultado": "procedente|improcedente|parcialmente_procedente|null (se não for sentença/decisão)",
-    "prazo_dias": número ou 0,
-    "data_prazo": "AAAA-MM-DD" ou null,
+    "resumo_consolidado": "Resumo claro e objetivo do que aconteceu no processo (3-5 frases). Indicar o tipo do ato, o que foi decidido/determinado, e a consequência prática.",
+    "tipo_andamento": "sentença|decisão_interlocutoria|intimação|audiência|perícia|laudo_pericial|citação|despacho|acórdão|execução|expediente|outro",
+    "resultado": "procedente|improcedente|parcialmente_procedente|null",
+    "area_direito": "trabalhista|previdenciário|cível",
+    "prazo_dias": 0,
+    "prazo_fundamento": "Art. X do CPC/CLT (descrição breve)",
+    "data_prazo": "AAAA-MM-DD ou null",
     "urgencia": "alta|media|baixa",
-    "acao_necessaria": "Descrição clara e direta da ação do advogado",
-    "precisa_peticao": true/false,
-    "tipo_peticao": "recurso|apelação|agravo|manifestação|contestação|embargos|cumprimento|impugnação|outro|nenhuma",
-    "texto_peticao": "TEXTO COMPLETO da petição/recurso/manifestação se precisa_peticao=true, senão null. Incluir: cabeçalho com dados do processo, qualificação das partes, fundamentação jurídica, pedidos, fechamento.",
-    "observacoes": "Pontos relevantes ou alertas para o advogado"
+    "acao_necessaria": "Descrição clara, direta e específica da ação que o advogado deve tomar. Ex: 'Interpor Recurso Ordinário contra sentença improcedente' ou 'Juntar documentos conforme determinado' ou 'Manifestar sobre laudo pericial desfavorável'",
+    "precisa_peticao": true,
+    "tipo_peticao": "recurso_ordinario|apelação|agravo_instrumento|agravo_interno|embargos_declaração|recurso_revista|recurso_especial|manifestação|impugnação_laudo|contrarrazões|petição_juntada|petição_intermediária|impugnação_penhora|embargos_execução|nenhuma",
+    "texto_peticao": "TEXTO COMPLETO E FORMAL da peça processual, pronta para protocolo. Incluir: endereçamento, qualificação, fundamentação de tempestividade, mérito com fundamentação jurídica (artigos, súmulas, jurisprudência), pedidos específicos, local/data/assinatura. Se precisa_peticao=false, usar null.",
+    "observacoes": "Alertas importantes: prazos curtos, riscos processuais, providências paralelas necessárias, documentos a reunir"
 }}"""
 
         try:
             response = client_ai.messages.create(
                 model="claude-sonnet-4-20250514",
-                max_tokens=8000,
+                max_tokens=16000,
                 messages=[{"role": "user", "content": prompt}]
             )
             response_text = response.content[0].text.strip()
@@ -3560,38 +3619,54 @@ def legalmail_regenerar_peticao():
     tipo_peticao = analysis_anterior.get("tipo_peticao_sugerida", "manifestação") if analysis_anterior else "manifestação"
 
     client_ai = anthropic.Anthropic()
-    prompt = f"""Você é um advogado previdenciário experiente especializado em BPC/LOAS e benefícios do INSS.
+    prompt = f"""Você é um especialista PhD em Direito Processual do escritório do Dr. José Roberto da Costa Junior (OAB/SP 378.163).
 
-Gere uma {tipo_peticao} para o processo abaixo. O texto deve ser COMPLETO, formal, técnico e pronto para protocolar.
+Gere uma peça processual do tipo "{tipo_peticao}" para o processo abaixo. O texto deve ser COMPLETO, formal, técnico e pronto para protocolar.
 
+## DADOS DO PROCESSO
 PROCESSO: {numero}
 TRIBUNAL: {proc_info.get('tribunal', '')}
 PARTE AUTORA: {proc_info.get('polo_ativo', '')}
 PARTE RÉ: {proc_info.get('polo_passivo', '')}
 CLASSE: {proc_info.get('classe', '')}
 
-MOVIMENTAÇÕES RECENTES:
+## MOVIMENTAÇÕES RECENTES
 {movs_text[:10000]}
 
-{f'INSTRUÇÕES ADICIONAIS DO ADVOGADO: {instrucoes}' if instrucoes else ''}
+{f'## INSTRUÇÕES ADICIONAIS DO ADVOGADO (PRIORIDADE MÁXIMA):{chr(10)}{instrucoes}' if instrucoes else ''}
 
-REQUISITOS DA PEÇA:
-- Cabeçalho com dados do processo e tribunal
-- Qualificação das partes (usar dados acima)
-- Fundamentação jurídica robusta (Lei 8.742/93, CF art. 203, Lei 8.213/91, jurisprudência)
-- Pedidos claros e objetivos
-- Fechamento formal
+## ESTRUTURA OBRIGATÓRIA DA PEÇA
+1. Endereçamento correto ao juízo/tribunal:
+   - JEF: "EXMO(A). SR(A). DR(A). JUIZ(A) FEDERAL DO JUIZADO ESPECIAL FEDERAL DE [CIDADE/UF]"
+   - TRF: "EXMO(A). SR(A). DR(A). DESEMBARGADOR(A) FEDERAL RELATOR(A) DO EGRÉGIO TRIBUNAL REGIONAL FEDERAL DA [X]ª REGIÃO"
+   - Vara do Trabalho: "EXMO(A). SR(A). DR(A). JUIZ(A) DO TRABALHO DA [X]ª VARA DO TRABALHO DE [CIDADE/UF]"
+   - TRT: "EXMO(A). SR(A). DR(A). DESEMBARGADOR(A) PRESIDENTE DA [X]ª TURMA DO TRT DA [X]ª REGIÃO"
+2. Qualificação: "[NOME], já qualificado(a) nos autos do Processo nº [nº]..."
+3. Tempestividade: demonstrar prazo, data da publicação, data limite
+4. Mérito com fundamentação jurídica robusta (artigos de lei, súmulas, jurisprudência aplicável)
+   - BPC/LOAS: Lei 8.742/93, CF art. 203, Decreto 6.214/07, Tema 106 STF
+   - Previdenciário: Lei 8.213/91, Decreto 3.048/99
+   - Trabalhista: CLT, Súmulas TST
+5. Pedidos claros, específicos e numerados
+6. Fechamento: local, data por extenso, "José Roberto da Costa Junior - Advogado - OAB/SP 378.163"
 
-Responda APENAS com JSON válido:
+## REGRAS DE REDAÇÃO
+- Seções em algarismos romanos (I, II, III), subseções em árabe (1, 2, 3)
+- Nomes das partes SEMPRE em caixa alta
+- ZERO traços decorativos (sem —, sem –, sem bullets desnecessários)
+- ZERO estilo "gerado por IA" (sem listas onde cabem parágrafos)
+- Linguagem jurídica formal e técnica
+
+Responda APENAS com JSON válido (sem markdown, sem ```):
 {{
     "tipo_peticao": "{tipo_peticao}",
-    "texto_peticao": "TEXTO COMPLETO DA PEÇA"
+    "texto_peticao": "TEXTO COMPLETO DA PEÇA PROCESSUAL"
 }}"""
 
     try:
         response = client_ai.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=8000,
+            max_tokens=16000,
             messages=[{"role": "user", "content": prompt}]
         )
         response_text = response.content[0].text.strip()
