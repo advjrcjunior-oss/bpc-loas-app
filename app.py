@@ -4611,8 +4611,8 @@ def whatsapp_webhook():
 
     # Filter by destination number (pós-venda) since ConversApp doesn't send channelId
     dest_number = (details.get("to") or "") if isinstance(details, dict) else ""
-    POS_VENDA_NUMBER = os.environ.get("CONVERSAPP_POS_VENDA_NUMBER", "+5519982268158")
-    if dest_number and POS_VENDA_NUMBER and dest_number != POS_VENDA_NUMBER:
+    POS_VENDA_NUMBERS = os.environ.get("CONVERSAPP_POS_VENDA_NUMBERS", "+5519982268158,+5516988124636").split(",")
+    if dest_number and POS_VENDA_NUMBERS and dest_number not in POS_VENDA_NUMBERS:
         print(f"[WHATSAPP] Ignorando msg para outro número: {dest_number}")
         return jsonify({"status": "ok", "action": "wrong_number"})
 
