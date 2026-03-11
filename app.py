@@ -4729,6 +4729,22 @@ def whatsapp_webhook():
     if not session_id:
         session_id = inner.get("sessionId") or data.get("sessionId")
 
+    # Check if session is active with a human agent - if so, Ana doesn't respond
+    if session_id and phone and message:
+        try:
+            sess_resp = conversapp_request("get", f"/chat/v1/session/{session_id}")
+            if sess_resp.status_code == 200:
+                sess_data = sess_resp.json()
+                sess_status = sess_data.get("status", "")
+                sess_user = sess_data.get("userId")
+                sess_bot = sess_data.get("botId")
+                if sess_status == "IN_PROGRESS" and sess_user:
+                    print(f"[WHATSAPP] Sessão ativa com atendente humano ({sess_user}), Ana não responde para {phone}")
+                    return jsonify({"status": "ok", "action": "skipped_human_session"})
+        except Exception as e:
+            print(f"[WHATSAPP] Erro ao verificar sessão: {e}")
+            # If can't check, proceed normally
+
     # Deduplication: skip if we already processed this message
     msg_id = (content.get("id") or inner.get("id") or data.get("id") or "") if isinstance(content, dict) else ""
     if not msg_id and phone and message:
