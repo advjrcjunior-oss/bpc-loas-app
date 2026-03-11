@@ -3980,7 +3980,7 @@ _TRADUCOES_MOV = {
     "acórdão publicado": "O acórdão é a decisão final do recurso na segunda instância. Isso significa que um grupo de juízes superiores, chamados desembargadores, se reuniu e votou sobre o seu caso. É como uma segunda análise da Justiça.",
     "decisão interlocutória": "O juiz tomou uma decisão parcial no seu processo. Isso não é o resultado final, é uma decisão sobre algum ponto específico que surgiu durante o andamento. O processo continua seguindo normalmente.",
     "julgamento antecipado": "O juiz decidiu analisar o seu caso sem precisar de audiência ou perícia, pois entendeu que já tinha informações suficientes para dar a decisão.",
-    "resolução parcial": "O juiz resolveu uma parte do seu processo, mas ainda restam outros pontos a serem decididos. O andamento continua normalmente para as questões restantes.",
+    "resolução parcial": "O juiz resolveu uma parte do seu processo. Seus documentos, provas, tudo foi analisado, mas ainda restam outros pontos a serem decididos. O andamento continua normalmente para as questões restantes.",
 }
 
 # Traduções de status INSS
