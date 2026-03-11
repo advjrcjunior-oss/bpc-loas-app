@@ -5042,16 +5042,149 @@ def whatsapp_webhook():
 
         threading.Thread(target=_process, daemon=True).start()
     elif phone and not message:
-        # Client sent image/audio/document without text - acknowledge
-        print(f"[WHATSAPP] Mídia sem texto de {phone}")
+        # Client sent image/audio/document without text
+        print(f"[WHATSAPP] Mídia sem texto de {phone} (tipo={msg_type})")
+
+        # Check pause (human takeover)
+        phone_clean_media = re.sub(r'[^\d]', '', str(phone))
+        if phone_clean_media in _paused_phones:
+            print(f"[WHATSAPP] Ana pausada para {phone}, ignorando mídia")
+            return jsonify({"status": "ok", "action": "paused"})
+
         sid = None
         if isinstance(content, dict):
             sid = content.get("sessionId")
         if not sid:
             sid = inner.get("sessionId") or data.get("sessionId")
+
+        # Check if session has human agent active
         if sid:
             try:
-                whatsapp_send_message(phone, "Recebi sua mensagem! Se precisar de algo, pode me escrever por texto que te ajudo.", session_id=sid)
+                sess_resp_media = conversapp_request("get", f"/chat/v1/session/{sid}")
+                if sess_resp_media.status_code == 200:
+                    sess_data_media = sess_resp_media.json()
+                    if sess_data_media.get("status") == "IN_PROGRESS" and sess_data_media.get("userId"):
+                        print(f"[WHATSAPP] Sessão com atendente humano, Ana ignora mídia de {phone}")
+                        return jsonify({"status": "ok", "action": "skipped_human_session"})
+            except Exception:
+                pass
+
+        # Check if it's an image - analyze with Claude Vision
+        file_url = None
+        if isinstance(content, dict):
+            file_id = content.get("fileId")
+            # Try multiple locations where ConversApp might put the file URL
+            file_url = content.get("fileUrl") or content.get("mediaUrl") or content.get("url") or ""
+            if not file_url:
+                file_details = (details.get("file") or {}) if isinstance(details, dict) else {}
+                if isinstance(file_details, dict):
+                    file_url = file_details.get("url") or file_details.get("link") or ""
+            if not file_url:
+                file_url = details.get("mediaUrl") or details.get("fileUrl") or details.get("url") or ""
+            # If no file URL found, try to get it from file ID
+            if not file_url and file_id:
+                try:
+                    file_resp = conversapp_request("get", f"/core/v1/file/{file_id}")
+                    if file_resp.status_code == 200:
+                        file_data = file_resp.json()
+                        file_url = file_data.get("url") or file_data.get("link") or ""
+                except Exception:
+                    pass
+
+        is_image = msg_type in ("IMAGE", "PHOTO", "STICKER")
+
+        if is_image and file_url and sid:
+            # Analyze image with Claude Vision in background
+            def _process_image():
+                phone_lock = _get_phone_lock(phone)
+                phone_lock.acquire()
+                try:
+                    # Send typing indicator
+                    try:
+                        conversapp_request("post", f"/chat/v1/session/{sid}/typing", json={})
+                    except Exception:
+                        pass
+
+                    # Download image
+                    img_resp = requests.get(file_url, timeout=15)
+                    if img_resp.status_code != 200 or len(img_resp.content) < 500:
+                        whatsapp_send_message(phone, "Recebi a imagem mas não consegui abrir. Pode enviar novamente?", session_id=sid)
+                        return
+
+                    # Detect content type
+                    img_content_type = img_resp.headers.get("Content-Type", "image/jpeg")
+                    if "png" in img_content_type:
+                        media_type = "image/png"
+                    elif "webp" in img_content_type:
+                        media_type = "image/webp"
+                    else:
+                        media_type = "image/jpeg"
+
+                    img_b64 = base64.b64encode(img_resp.content).decode("utf-8")
+
+                    # Analyze with Claude Vision
+                    client_ai = anthropic.Anthropic()
+                    response = client_ai.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=400,
+                        system="""Você é Ana, do pós-venda da JRC Advocacia. Um cliente enviou uma imagem/documento.
+
+Analise a imagem e responda de forma curta e direta:
+
+1. IDENTIFIQUE o tipo de documento (laudo médico, comprovante de residência, RG, CPF, receita, exame, declaração, etc.)
+2. AVALIE A QUALIDADE:
+   - Está LEGÍVEL? (texto nítido, sem cortes)
+   - Está CORTADO? (faltando partes do documento)
+   - Está EMBAÇADO ou ESCURO? (difícil de ler)
+   - Está DE CABEÇA PRA BAIXO ou TORTO?
+
+SE O DOCUMENTO ESTÁ BOM:
+"Recebi o [tipo do documento]! Está bem legível. Vou encaminhar para o escritório analisar."
+
+SE O DOCUMENTO ESTÁ RUIM (cortado, ilegível, embaçado):
+"Recebi o [tipo do documento], mas [problema específico]. Pode enviar novamente [instrução específica]?"
+
+Exemplos de instrução:
+- "tirando a foto mais de cima para pegar o documento inteiro?"
+- "com mais luz para ficar mais nítido?"
+- "sem cortar as bordas do documento?"
+
+SE NÃO É UM DOCUMENTO (foto pessoal, meme, etc.):
+"Recebi sua imagem! Se precisar enviar algum documento, pode mandar por aqui que eu encaminho pro escritório."
+
+Seja curta e direta. Máximo 3 linhas.""",
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": img_b64}},
+                                {"type": "text", "text": "Analise esta imagem enviada pelo cliente."}
+                            ]
+                        }],
+                    )
+                    resposta = response.content[0].text.strip()
+
+                    time.sleep(5)  # Small delay to seem natural
+                    whatsapp_send_message(phone, resposta, session_id=sid)
+                    print(f"[BOT] Imagem analisada para {phone}: {resposta[:100]}")
+
+                except Exception as e:
+                    print(f"[WHATSAPP] Erro ao analisar imagem: {e}")
+                    traceback.print_exc()
+                    try:
+                        whatsapp_send_message(phone, "Recebi o documento! Vou encaminhar para o escritório analisar.", session_id=sid)
+                    except Exception:
+                        pass
+                finally:
+                    phone_lock.release()
+
+            threading.Thread(target=_process_image, daemon=True).start()
+
+        elif sid:
+            try:
+                if msg_type in ("AUDIO", "VOICE", "PTT"):
+                    whatsapp_send_message(phone, "Recebi seu áudio! Infelizmente não consegui ouvir. Pode me escrever por texto?", session_id=sid)
+                else:
+                    whatsapp_send_message(phone, "Recebi o arquivo! Vou encaminhar para o escritório.", session_id=sid)
             except Exception:
                 pass
     else:
