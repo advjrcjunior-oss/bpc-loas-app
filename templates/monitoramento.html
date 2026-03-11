@@ -410,6 +410,33 @@ async function loadNotifications() {
             const dates = group.notifications.map(n => n.data_movimentacao || '').filter(Boolean);
             const mostRecent = dates.sort().reverse()[0] || '-';
 
+            // Check if there's a consolidated analysis
+            const consolidatedNotif = group.notifications.find(n => n.analysis && n.analysis.consolidado);
+            const ca = consolidatedNotif ? consolidatedNotif.analysis : null;
+            let consolidatedHtml = '';
+            if (ca) {
+                const caUrgClass = ca.urgencia === 'alta' ? 'badge-alta' : ca.urgencia === 'media' ? 'badge-media' : 'badge-baixa';
+                const hasPetition = ca.tipo_peticao_sugerida && ca.tipo_peticao_sugerida !== 'nenhuma';
+                // Check if PDF was generated (stored in first notification's analysis)
+                const firstAnalyzed = group.notifications.find(n => n.analysis?.pdf_url);
+                const pdfUrl = firstAnalyzed?.analysis?.pdf_url || '';
+
+                consolidatedHtml = `
+                    <div class="analysis-box" style="background:#e8f0fe; border:2px solid #4472C4; margin-bottom:14px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                            <strong style="color:#1F3763; font-size:.95rem;">Analise Consolidada</strong>
+                            <span class="notif-badge ${caUrgClass}">${ca.urgencia || 'analisado'}</span>
+                        </div>
+                        <div class="field"><span class="label">Resumo:</span> ${ca.resumo || '-'}</div>
+                        <div class="field"><span class="label">Tipo:</span> ${ca.tipo_movimentacao || '-'}</div>
+                        ${ca.resultado_merito ? `<div class="field"><span class="label">Resultado:</span> <strong style="color:#c62828;">${ca.resultado_merito}</strong></div>` : ''}
+                        <div class="field"><span class="label">Prazo:</span> ${ca.prazo_dias ? ca.prazo_dias + ' dias' : 'Sem prazo'} ${ca.data_prazo ? '(ate ' + ca.data_prazo + ')' : ''}</div>
+                        <div class="action">${ca.acao_necessaria || 'Nenhuma acao necessaria'}</div>
+                        ${hasPetition ? `<div class="field" style="margin-top:8px;"><span class="label">Peticao sugerida:</span> <strong>${ca.tipo_peticao_sugerida}</strong></div>` : ''}
+                        ${ca.observacoes ? `<div class="field"><span class="label">Obs:</span> ${ca.observacoes}</div>` : ''}
+                    </div>`;
+            }
+
             // Render individual notifications inside group
             const notifsHtml = group.notifications
                 .sort((a, b) => (b.data_movimentacao || '').localeCompare(a.data_movimentacao || ''))
@@ -472,6 +499,11 @@ async function loadNotifications() {
                         </div>
                     </div>
                     <div class="process-group-body">
+                        <div style="margin-bottom:12px; display:flex; gap:8px; align-items:center;">
+                            ${pendingCount > 0 ? `<button class="btn-sm btn-orange" onclick="analyzeConsolidated('${group.numero}', this)">Analisar Tudo</button>` : ''}
+                            ${allAnalyzed && group.notifications[0]?.analysis?.consolidado ? `<button class="btn-sm btn-blue" onclick="regenerarPeticao('${group.numero}')">Gerar Nova Versao</button>` : ''}
+                        </div>
+                        ${consolidatedHtml}
                         ${notifsHtml}
                     </div>
                 </div>`;
@@ -485,6 +517,66 @@ function toggleGroup(header) {
     header.classList.toggle('open');
     const body = header.nextElementSibling;
     body.classList.toggle('open');
+}
+
+async function analyzeConsolidated(numeroProcesso, btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading-inline"></span> Analisando processo...';
+    try {
+        const result = await api('/api/legalmail/analisar-consolidado', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({numero_processo: numeroProcesso})
+        });
+        if (result.results && result.results.length > 0) {
+            const r = result.results[0];
+            if (r.error) {
+                alert('Erro na analise: ' + r.error);
+            } else {
+                const a = r.analysis || {};
+                let msg = `Analise consolidada concluida!\n\nResumo: ${a.resumo_consolidado || '-'}\nUrgencia: ${a.urgencia || '-'}\nAcao: ${a.acao_necessaria || '-'}`;
+                if (a.precisa_peticao && a.pdf_url) {
+                    msg += `\n\nPeticao gerada! Clique OK para baixar.`;
+                    alert(msg);
+                    window.open(a.pdf_url, '_blank');
+                } else {
+                    alert(msg);
+                }
+            }
+        }
+        loadNotifications();
+    } catch(e) {
+        alert('Erro: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Analisar Tudo';
+    }
+}
+
+async function regenerarPeticao(numeroProcesso) {
+    const instrucoes = prompt('Instrucoes adicionais para a peticao (deixe vazio para gerar automaticamente):');
+    if (instrucoes === null) return; // cancelled
+
+    const btn = event.target;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading-inline"></span> Gerando...';
+    try {
+        const result = await api('/api/legalmail/regenerar-peticao', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({numero_processo: numeroProcesso, instrucoes: instrucoes})
+        });
+        if (result.pdf_url) {
+            alert(`Peticao gerada: ${result.tipo_peticao}\nClique OK para baixar.`);
+            window.open(result.pdf_url, '_blank');
+        } else if (result.error) {
+            alert('Erro: ' + result.error);
+        }
+    } catch(e) {
+        alert('Erro: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Gerar Nova Versao';
+    }
 }
 
 function updateStats(notifications) {
@@ -518,14 +610,20 @@ async function analyzeSingle(timestamp) {
 async function analyzeAll() {
     const btn = document.getElementById('btnAnalyzeAll');
     btn.disabled = true;
-    btn.innerHTML = '<span class="loading-inline"></span> Analisando todos...';
+    btn.innerHTML = '<span class="loading-inline"></span> Analisando todos (consolidado)...';
     try {
-        const result = await api('/api/legalmail/analisar-todos', {
+        const result = await api('/api/legalmail/analisar-consolidado', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: '{}'
         });
-        alert(`Analise concluida: ${result.analyzed || 0} notificacoes analisadas.`);
+        const total = result.processos_analisados || 0;
+        const withPetition = (result.results || []).filter(r => r.analysis && r.analysis.precisa_peticao).length;
+        let msg = `Analise consolidada concluida!\n${total} processo(s) analisado(s).`;
+        if (withPetition > 0) {
+            msg += `\n${withPetition} peticao(oes) gerada(s) automaticamente.`;
+        }
+        alert(msg);
         loadNotifications();
     } catch(e) {
         alert('Erro: ' + e.message);

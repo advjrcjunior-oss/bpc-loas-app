@@ -3334,6 +3334,304 @@ JSON formato:
     return jsonify({"status": "ok", "analyzed": len(results), "results": results})
 
 
+@app.route("/api/legalmail/analisar-consolidado", methods=["POST"])
+def legalmail_analisar_consolidado():
+    """Analyze all movements of a process together (consolidated analysis).
+
+    Groups all notifications by process, sends everything to Claude for a single
+    intelligent analysis, and auto-generates petition/manifestation if needed.
+
+    Body: { "numero_processo": "5011520-58.2026.4.04.7000" }
+    Or: {} to analyze ALL pending processes at once.
+    """
+    data = request.get_json() or {}
+    target_processo = data.get("numero_processo", "")
+
+    notifications = _load_notifications()
+    if not isinstance(notifications, list):
+        return jsonify({"error": "Sem notificações"}), 400
+
+    # Group notifications by process
+    groups = {}
+    for i, n in enumerate(notifications):
+        if not isinstance(n, dict):
+            continue
+        num = n.get("numero_processo", "")
+        if not num:
+            continue
+        if target_processo and num != target_processo:
+            continue
+        if num not in groups:
+            groups[num] = {
+                "indices": [],
+                "tribunal": n.get("tribunal", ""),
+                "polo_ativo": n.get("polo_ativo", ""),
+                "polo_passivo": n.get("polo_passivo", ""),
+                "classe": n.get("nome_classe", "") or n.get("classe", ""),
+                "idprocesso": n.get("idprocesso", ""),
+                "movimentacoes": []
+            }
+        groups[num]["indices"].append(i)
+        groups[num]["movimentacoes"].append({
+            "data": n.get("data_movimentacao", ""),
+            "titulo": n.get("titulo_movimentacao", ""),
+            "texto": n.get("texto_movimentacao", "")[:3000],
+        })
+
+    if not groups:
+        return jsonify({"status": "ok", "message": "Nenhum processo para analisar", "results": []})
+
+    client_ai = anthropic.Anthropic()
+    results = []
+
+    for numero, group in groups.items():
+        # Build consolidated text of ALL movements
+        movs_text = ""
+        for m in sorted(group["movimentacoes"], key=lambda x: x.get("data", "")):
+            movs_text += f"\n--- {m['data']} | {m['titulo']} ---\n"
+            if m['texto']:
+                movs_text += m['texto'] + "\n"
+
+        if not movs_text.strip():
+            continue
+
+        # Consolidated analysis prompt
+        prompt = f"""Você é um advogado previdenciário experiente especializado em BPC/LOAS e benefícios do INSS.
+
+Analise de forma CONSOLIDADA todas as movimentações abaixo do mesmo processo. São várias publicações que correspondem a um único andamento processual.
+
+PROCESSO: {numero}
+TRIBUNAL: {group['tribunal']}
+PARTE AUTORA: {group['polo_ativo']}
+PARTE RÉ: {group['polo_passivo']}
+CLASSE: {group['classe']}
+
+MOVIMENTAÇÕES:
+{movs_text[:12000]}
+
+INSTRUÇÕES:
+1. Faça uma análise ÚNICA e consolidada de tudo (não analise cada movimentação separadamente)
+2. Identifique o que realmente aconteceu no processo (ex: foi proferida sentença, houve intimação pra audiência, etc.)
+3. Se há prazo, calcule a data limite considerando dias úteis
+4. Se for necessário elaborar petição, recurso, manifestação ou qualquer peça processual, GERE O TEXTO COMPLETO da peça
+5. A peça deve ser formal, técnica, fundamentada em legislação aplicável (Lei 8.742/93 LOAS, CF art. 203, Lei 8.213/91, etc.)
+
+Responda APENAS com JSON válido:
+{{
+    "resumo_consolidado": "Resumo claro do que aconteceu no processo (3-5 frases)",
+    "tipo_andamento": "sentença|decisão|intimação|audiência|perícia|citação|despacho|expediente|outro",
+    "resultado": "procedente|improcedente|parcialmente_procedente|null (se não for sentença/decisão)",
+    "prazo_dias": número ou 0,
+    "data_prazo": "AAAA-MM-DD" ou null,
+    "urgencia": "alta|media|baixa",
+    "acao_necessaria": "Descrição clara e direta da ação do advogado",
+    "precisa_peticao": true/false,
+    "tipo_peticao": "recurso|apelação|agravo|manifestação|contestação|embargos|cumprimento|impugnação|outro|nenhuma",
+    "texto_peticao": "TEXTO COMPLETO da petição/recurso/manifestação se precisa_peticao=true, senão null. Incluir: cabeçalho com dados do processo, qualificação das partes, fundamentação jurídica, pedidos, fechamento.",
+    "observacoes": "Pontos relevantes ou alertas para o advogado"
+}}"""
+
+        try:
+            response = client_ai.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=8000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            response_text = response.content[0].text.strip()
+
+            # Parse JSON
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+
+            analysis = json.loads(response_text)
+
+            # If petition was generated, save as PDF
+            pdf_filename = None
+            if analysis.get("precisa_peticao") and analysis.get("texto_peticao"):
+                try:
+                    safe_num = re.sub(r'[^\d\-\.]', '', numero)
+                    pdf_filename = f"peticao_{safe_num}_{_dt.datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+                    pdf_path = os.path.join(OUTPUT_DIR, pdf_filename)
+
+                    doc = fitz.open()
+                    remaining_text = analysis["texto_peticao"]
+                    while remaining_text.strip():
+                        page = doc.new_page()
+                        text_rect = fitz.Rect(72, 72, page.rect.width - 72, page.rect.height - 72)
+                        rc = page.insert_textbox(text_rect, remaining_text, fontsize=11, fontname="helv")
+                        if rc >= 0:
+                            break
+                        overflow_idx = len(remaining_text) - int(abs(rc))
+                        remaining_text = remaining_text[overflow_idx:]
+                    doc.save(pdf_path)
+                    doc.close()
+                    analysis["pdf_filename"] = pdf_filename
+                    analysis["pdf_url"] = f"/api/download/{pdf_filename}"
+                    print(f"  [MONITOR] Petição gerada: {pdf_filename}")
+                except Exception as e:
+                    print(f"  [MONITOR] Erro ao gerar PDF da petição: {e}")
+
+            # Update all notifications of this process with consolidated analysis
+            for idx in group["indices"]:
+                if idx < len(notifications):
+                    notifications[idx]["analyzed"] = True
+                    notifications[idx]["analysis"] = {
+                        "resumo": analysis.get("resumo_consolidado", ""),
+                        "tipo_movimentacao": analysis.get("tipo_andamento", ""),
+                        "prazo_dias": analysis.get("prazo_dias", 0),
+                        "data_prazo": analysis.get("data_prazo"),
+                        "urgencia": analysis.get("urgencia", "baixa"),
+                        "acao_necessaria": analysis.get("acao_necessaria", ""),
+                        "tipo_peticao_sugerida": analysis.get("tipo_peticao", "nenhuma"),
+                        "resultado_merito": analysis.get("resultado"),
+                        "observacoes": analysis.get("observacoes", ""),
+                        "consolidado": True,
+                    }
+
+            results.append({
+                "numero_processo": numero,
+                "polo_ativo": group["polo_ativo"],
+                "movimentacoes": len(group["movimentacoes"]),
+                "analysis": analysis,
+            })
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            results.append({
+                "numero_processo": numero,
+                "error": str(e),
+            })
+
+    _save_notifications(notifications)
+    return jsonify({
+        "status": "ok",
+        "processos_analisados": len(results),
+        "results": results
+    })
+
+
+@app.route("/api/legalmail/regenerar-peticao", methods=["POST"])
+def legalmail_regenerar_peticao():
+    """Regenerate a petition with optional instructions.
+
+    Body: {
+        "numero_processo": "5011520-58.2026.4.04.7000",
+        "instrucoes": "Focar mais na questão da deficiência, usar jurisprudência do TRF-4"
+    }
+    """
+    data = request.get_json() or {}
+    numero = data.get("numero_processo", "")
+    instrucoes = data.get("instrucoes", "")
+
+    if not numero:
+        return jsonify({"error": "numero_processo obrigatório"}), 400
+
+    notifications = _load_notifications()
+    # Collect all movements for this process
+    movs_text = ""
+    analysis_anterior = None
+    indices = []
+    proc_info = {}
+    for i, n in enumerate(notifications):
+        if not isinstance(n, dict) or n.get("numero_processo") != numero:
+            continue
+        indices.append(i)
+        if not proc_info:
+            proc_info = {
+                "tribunal": n.get("tribunal", ""),
+                "polo_ativo": n.get("polo_ativo", ""),
+                "polo_passivo": n.get("polo_passivo", ""),
+                "classe": n.get("classe", ""),
+                "idprocesso": n.get("idprocesso", ""),
+            }
+        if n.get("analysis") and n["analysis"].get("consolidado"):
+            analysis_anterior = n["analysis"]
+        m_data = n.get("data_movimentacao", "")
+        m_titulo = n.get("titulo_movimentacao", "")
+        m_texto = n.get("texto_movimentacao", "")[:3000]
+        movs_text += f"\n--- {m_data} | {m_titulo} ---\n{m_texto}\n"
+
+    if not movs_text.strip():
+        return jsonify({"error": "Nenhuma movimentação encontrada para este processo"}), 400
+
+    tipo_peticao = analysis_anterior.get("tipo_peticao_sugerida", "manifestação") if analysis_anterior else "manifestação"
+
+    client_ai = anthropic.Anthropic()
+    prompt = f"""Você é um advogado previdenciário experiente especializado em BPC/LOAS e benefícios do INSS.
+
+Gere uma {tipo_peticao} para o processo abaixo. O texto deve ser COMPLETO, formal, técnico e pronto para protocolar.
+
+PROCESSO: {numero}
+TRIBUNAL: {proc_info.get('tribunal', '')}
+PARTE AUTORA: {proc_info.get('polo_ativo', '')}
+PARTE RÉ: {proc_info.get('polo_passivo', '')}
+CLASSE: {proc_info.get('classe', '')}
+
+MOVIMENTAÇÕES RECENTES:
+{movs_text[:10000]}
+
+{f'INSTRUÇÕES ADICIONAIS DO ADVOGADO: {instrucoes}' if instrucoes else ''}
+
+REQUISITOS DA PEÇA:
+- Cabeçalho com dados do processo e tribunal
+- Qualificação das partes (usar dados acima)
+- Fundamentação jurídica robusta (Lei 8.742/93, CF art. 203, Lei 8.213/91, jurisprudência)
+- Pedidos claros e objetivos
+- Fechamento formal
+
+Responda APENAS com JSON válido:
+{{
+    "tipo_peticao": "{tipo_peticao}",
+    "texto_peticao": "TEXTO COMPLETO DA PEÇA"
+}}"""
+
+    try:
+        response = client_ai.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=8000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        response_text = response.content[0].text.strip()
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].split("```")[0].strip()
+
+        result = json.loads(response_text)
+
+        # Save as PDF
+        safe_num = re.sub(r'[^\d\-\.]', '', numero)
+        pdf_filename = f"peticao_{safe_num}_{_dt.datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+        pdf_path = os.path.join(OUTPUT_DIR, pdf_filename)
+
+        doc = fitz.open()
+        remaining_text = result.get("texto_peticao", "")
+        while remaining_text.strip():
+            page = doc.new_page()
+            text_rect = fitz.Rect(72, 72, page.rect.width - 72, page.rect.height - 72)
+            rc = page.insert_textbox(text_rect, remaining_text, fontsize=11, fontname="helv")
+            if rc >= 0:
+                break
+            overflow_idx = len(remaining_text) - int(abs(rc))
+            remaining_text = remaining_text[overflow_idx:]
+        doc.save(pdf_path)
+        doc.close()
+
+        return jsonify({
+            "status": "ok",
+            "tipo_peticao": result.get("tipo_peticao", tipo_peticao),
+            "texto_peticao": result.get("texto_peticao", ""),
+            "pdf_filename": pdf_filename,
+            "pdf_url": f"/api/download/{pdf_filename}",
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/legalmail/buscar-processo", methods=["GET"])
 def legalmail_buscar_processo():
     """Busca processo por número ou nome da parte — usa cache local."""
