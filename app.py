@@ -2229,7 +2229,7 @@ import threading
 import datetime as _dt
 
 # Persistent storage - PostgreSQL on Railway, JSON files locally
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 USE_DB = bool(DATABASE_URL)
 
 # Local file fallback
