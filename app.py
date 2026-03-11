@@ -2611,7 +2611,9 @@ def _monitor_loop():
         try:
             monitor_check_updates()
         except Exception as e:
+            import traceback
             print(f"  [MONITOR] Erro no ciclo: {e}")
+            traceback.print_exc()
 
         # Sleep in small increments so we can stop cleanly
         for _ in range(MONITOR_INTERVAL_MINUTES * 60):
@@ -2642,21 +2644,26 @@ def stop_monitor():
 @app.route("/api/legalmail/monitor/status", methods=["GET"])
 def legalmail_monitor_status():
     """Get monitor status and stats."""
-    state = _load_monitor_state()
-    notifications = _load_notifications()
-    pending = [n for n in notifications if not n.get("analyzed")]
-    urgent = [n for n in notifications if n.get("analysis", {}).get("urgencia") == "alta"]
-    return jsonify({
-        "running": _monitor_running,
-        "interval_minutes": MONITOR_INTERVAL_MINUTES,
-        "last_check": state.get("last_check"),
-        "processes_total": state.get("processes_total", 0),
-        "processes_active": state.get("processes_active", 0),
-        "notifications_total": len(notifications),
-        "notifications_pending": len(pending),
-        "notifications_urgent": len(urgent),
-        "auto_analyze": state.get("auto_analyze", True),
-    })
+    try:
+        state = _load_monitor_state()
+        notifications = _load_notifications()
+        if not isinstance(notifications, list):
+            notifications = []
+        pending = [n for n in notifications if isinstance(n, dict) and not n.get("analyzed")]
+        urgent = [n for n in notifications if isinstance(n, dict) and (n.get("analysis") or {}).get("urgencia") == "alta"]
+        return jsonify({
+            "running": _monitor_running,
+            "interval_minutes": MONITOR_INTERVAL_MINUTES,
+            "last_check": state.get("last_check"),
+            "processes_total": state.get("processes_total", 0),
+            "processes_active": state.get("processes_active", 0),
+            "notifications_total": len(notifications),
+            "notifications_pending": len(pending),
+            "notifications_urgent": len(urgent),
+            "auto_analyze": state.get("auto_analyze", True),
+        })
+    except Exception as e:
+        return jsonify({"error": f"Status error: {e}", "running": _monitor_running}), 500
 
 
 @app.route("/api/legalmail/monitor/start", methods=["POST"])
