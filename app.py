@@ -2671,7 +2671,21 @@ def legalmail_monitor_stop():
 
 @app.route("/api/legalmail/monitor/check-now", methods=["POST"])
 def legalmail_monitor_check_now():
-    """Run a manual check immediately (in a thread to not block)."""
+    """Run a manual check immediately (in a thread to not block).
+
+    Pass ?rescan=true to clear known movements and re-detect recent ones.
+    This is useful after first run or when updates were missed.
+    """
+    rescan = request.args.get("rescan", "").lower() == "true"
+    if rescan:
+        state = _load_monitor_state()
+        state["known_movements"] = {}
+        state["last_imports"] = {}
+        # Keep first_run_done=True so it generates notifications (not silent first run)
+        state["first_run_done"] = True
+        _save_monitor_state(state)
+        print("[MONITOR] Re-scan: known_movements limpo, vai re-detectar movimentações recentes")
+
     def _run():
         try:
             monitor_check_updates()
@@ -2679,7 +2693,8 @@ def legalmail_monitor_check_now():
             print(f"  [MONITOR] Erro: {e}")
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    return jsonify({"status": "ok", "message": "Verificação iniciada em background"})
+    msg = "Re-scan iniciado (detectando movimentações de ontem/hoje)" if rescan else "Verificação iniciada em background"
+    return jsonify({"status": "ok", "message": msg})
 
 
 @app.route("/api/legalmail/monitor/config", methods=["POST"])
