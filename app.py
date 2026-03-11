@@ -3819,9 +3819,29 @@ Escreva uma mensagem curta, clara e em linguagem simples (sem juridiquês) para 
 @app.route("/api/health")
 @require_admin
 def health_check():
-    """Test API connectivity."""
+    """Test API connectivity and DB status."""
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    result = {"api_key_set": bool(api_key)}
+    result = {
+        "api_key_set": bool(api_key),
+        "database_url_set": bool(DATABASE_URL),
+        "use_db": USE_DB,
+    }
+    # Test DB connection
+    if USE_DB:
+        try:
+            conn = _get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT key, LENGTH(value::text) as size FROM kv_store")
+            rows = cur.fetchall()
+            result["db_status"] = "connected"
+            result["db_keys"] = {row[0]: row[1] for row in rows}
+            cur.close()
+            conn.close()
+        except Exception as e:
+            result["db_status"] = f"error: {e}"
+    else:
+        result["db_status"] = "not_configured"
+    # Test AI
     try:
         client_ai = anthropic.Anthropic(api_key=api_key, timeout=30.0)
         response = client_ai.messages.create(
