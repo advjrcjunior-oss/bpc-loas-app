@@ -59,6 +59,9 @@ WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 def _check_admin_token():
     """Validate admin token from query param or header."""
     token = request.args.get("token", "") or request.headers.get("X-Admin-Token", "")
+    # Debug (temporary - remove after fixing)
+    if token and not hmac.compare_digest(token, ADMIN_TOKEN):
+        print(f"[SECURITY] Token mismatch: received len={len(token)} repr={repr(token[:10])}... expected len={len(ADMIN_TOKEN)} repr={repr(ADMIN_TOKEN[:10])}...")
     if not token or not hmac.compare_digest(token, ADMIN_TOKEN):
         return False
     return True
@@ -162,6 +165,14 @@ def load_skill_prompt():
     with open(SKILL_PROMPT_PATH, "r", encoding="utf-8") as f:
         return f.read()
 
+
+@app.route("/api/token-debug")
+def token_debug():
+    """Temporary debug endpoint - REMOVE AFTER FIXING."""
+    env_set = bool(os.environ.get("ADMIN_TOKEN"))
+    token_len = len(ADMIN_TOKEN)
+    token_start = ADMIN_TOKEN[:4] + "..."
+    return jsonify({"env_set": env_set, "token_len": token_len, "token_start": token_start})
 
 @app.route("/")
 def index():
