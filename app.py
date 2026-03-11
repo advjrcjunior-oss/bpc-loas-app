@@ -3344,6 +3344,7 @@ _whatsapp_sessions = {}
 _whatsapp_locks = {}  # Per-phone threading locks to prevent race conditions
 _whatsapp_locks_lock = threading.Lock()  # Lock for accessing _whatsapp_locks
 _processed_msg_ids = set()  # Track processed message IDs for deduplication
+_processed_msg_ids_lock = threading.Lock()  # Lock for thread-safe dedup
 _session_last_activity = {}  # Track last activity per phone for cleanup
 
 
@@ -3371,8 +3372,9 @@ def _cleanup_old_sessions():
     if phones_to_remove:
         print(f"[BOT] Limpou {len(phones_to_remove)} sessões inativas")
     # Also trim dedup set if too large
-    if len(_processed_msg_ids) > 1000:
-        _processed_msg_ids.clear()
+    with _processed_msg_ids_lock:
+        if len(_processed_msg_ids) > 1000:
+            _processed_msg_ids.clear()
 
 BOT_SYSTEM_PROMPT = """Você é Ana, do pós-venda da JRC Advocacia.
 
@@ -3953,9 +3955,8 @@ REGRAS:
         resposta = response.content[0].text.strip()
         if resposta and len(resposta) > 20:
             # Strip unwanted greetings that Claude may add despite instructions
-            import re as _re_clean
-            resposta = _re_clean.sub(r'^(Oi[,!]?\s*\S*[!]?\s*[👋🤗😊]?\s*\n*)', '', resposta).strip()
-            resposta = _re_clean.sub(r'^(Olá[,!]?\s*\S*[!]?\s*[👋🤗😊]?\s*\n*)', '', resposta).strip()
+            # Only match optional capitalized name (not any word like "Encontrei")
+            resposta = re.sub(r'^(?:Oi|Olá|Ei|Hey)[,!]?\s*(?:[A-ZÀ-Ú][a-zà-ú]+)?[,!]?\s*[👋🤗😊]?\s*\n*', '', resposta, flags=re.UNICODE).strip()
             if resposta and len(resposta) > 20:
                 return resposta
     except Exception as e:
@@ -4044,7 +4045,7 @@ def whatsapp_processar_mensagem(phone, message):
         "como", "está", "esta", "tá", "ta", "quero", "preciso", "saber", "ver",
         "judicial", "administrativo", "outro", "outra", "tipo", "qual",
         "tudo", "bem", "isso", "esse", "essa", "aqui", "ali", "lá", "la",
-        "por", "favor", "por favor", "obrigada", "muito", "só", "so", "ainda",
+        "por", "favor", "por favor", "muito", "só", "so", "ainda",
         "quando", "onde", "porque", "mas", "que", "se", "com", "sem", "até", "ate",
         "?", "!", ".", "nada", "algo", "alguma", "coisa", "pode", "ajudar",
     }
@@ -4410,11 +4411,12 @@ def whatsapp_webhook():
         # Create synthetic ID from phone + message + timestamp (approximate dedup)
         import hashlib
         msg_id = hashlib.md5(f"{phone}:{message[:50]}:{str(data.get('timestamp', ''))}".encode()).hexdigest()
-    if msg_id and msg_id in _processed_msg_ids:
-        print(f"[WHATSAPP] Mensagem duplicada ignorada: {msg_id[:20]}")
-        return jsonify({"status": "ok", "action": "duplicate"})
-    if msg_id:
-        _processed_msg_ids.add(msg_id)
+    with _processed_msg_ids_lock:
+        if msg_id and msg_id in _processed_msg_ids:
+            print(f"[WHATSAPP] Mensagem duplicada ignorada: {msg_id[:20]}")
+            return jsonify({"status": "ok", "action": "duplicate"})
+        if msg_id:
+            _processed_msg_ids.add(msg_id)
 
     # Periodic cleanup of old sessions
     from datetime import datetime as _dt_cleanup
@@ -4539,6 +4541,9 @@ def whatsapp_webhook():
 @app.route("/api/whatsapp/test", methods=["POST"])
 def whatsapp_test():
     """Test the bot logic without WhatsApp - send a message and get the response."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
     data = request.get_json() or {}
     phone = data.get("phone", "test")
     message = data.get("message", "")
