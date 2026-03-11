@@ -3351,6 +3351,38 @@ _processed_msg_ids = set()  # Track processed message IDs for deduplication
 _processed_msg_ids_lock = threading.Lock()  # Lock for thread-safe dedup
 _session_last_activity = {}  # Track last activity per phone for cleanup
 _paused_phones = {}  # Phones where Ana is paused (human takeover) - {phone: timestamp}
+MICHELLE_USER_ID = "95f8cfa9-89e1-4ef6-af46-511651ba492f"
+
+
+def conversapp_complete_session(session_id):
+    """Complete/close a ConversApp session."""
+    try:
+        resp = conversapp_request("put", f"/chat/v1/session/{session_id}/complete", json={})
+        if resp.status_code == 200:
+            print(f"[CONVERSAPP] Sessão {session_id} concluída")
+            return True
+        else:
+            print(f"[CONVERSAPP] Erro ao concluir sessão {session_id}: {resp.status_code} {resp.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"[CONVERSAPP] Erro ao concluir sessão: {e}")
+        return False
+
+
+def conversapp_transfer_session(session_id, user_id=None):
+    """Transfer a ConversApp session to another agent."""
+    user_id = user_id or MICHELLE_USER_ID
+    try:
+        resp = conversapp_request("put", f"/chat/v1/session/{session_id}/transfer", json={"userId": user_id})
+        if resp.status_code == 200:
+            print(f"[CONVERSAPP] Sessão {session_id} transferida para {user_id}")
+            return True
+        else:
+            print(f"[CONVERSAPP] Erro ao transferir sessão {session_id}: {resp.status_code} {resp.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"[CONVERSAPP] Erro ao transferir sessão: {e}")
+        return False
 
 
 def _get_phone_lock(phone):
@@ -3461,8 +3493,17 @@ PASSO 5 — Encerramento
 Após entregar a informação principal:
 "Ficou alguma dúvida ou posso te ajudar com mais alguma coisa?"
 
-Se não → "Ótimo! Qualquer coisa é só chamar. Tenha um bom dia!"
+Se não → "Ótimo! Qualquer coisa é só chamar. Tenha um bom dia!" e adicione [ENCERRAR_SESSAO] no final da sua resposta.
 Se sim → responda e repita até encerrar naturalmente.
+
+Quando o cliente encerrar a conversa (ex: "obrigado", "valeu", "ok", "tchau", "era só isso", "não, obrigada"), envie a despedida e adicione [ENCERRAR_SESSAO] no final.
+
+Exemplos de encerramento:
+- Cliente: "obrigada" → "De nada! Qualquer coisa é só chamar. Tenha um ótimo dia! [ENCERRAR_SESSAO]"
+- Cliente: "era só isso mesmo" → "Ótimo! Estou por aqui se precisar. Tenha um bom dia! [ENCERRAR_SESSAO]"
+- Cliente: "ok obrigado" → "Que bom que pude ajudar! Qualquer dúvida é só chamar. [ENCERRAR_SESSAO]"
+
+IMPORTANTE: O marcador [ENCERRAR_SESSAO] é invisível para o cliente, serve apenas como sinal interno. Só use quando o cliente CLARAMENTE encerrou a conversa.
 
 ---
 
@@ -3499,7 +3540,9 @@ Não encontrar nada no sistema.
 A dúvida não puder ser resolvida pelo chat.
 
 Mensagem padrão:
-"Esse assunto a equipe do Dr. José Roberto consegue te ajudar melhor. Vou avisar eles para entrar em contato com você."
+"Vou te transferir para a Michelle do nosso pós-venda, ela vai te ajudar melhor com isso!" e adicione [TRANSFERIR_MICHELLE] no final.
+
+IMPORTANTE: O marcador [TRANSFERIR_MICHELLE] é invisível para o cliente, serve apenas como sinal interno. Só use quando realmente precisar escalar.
 
 ---
 
@@ -4657,8 +4700,9 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
         )
         resposta = response.content[0].text.strip()
 
-        # Save assistant response in history
-        historico.append({"role": "assistant", "content": resposta})
+        # Save assistant response in history (clean markers)
+        resposta_limpa = resposta.replace("[ENCERRAR_SESSAO]", "").replace("[TRANSFERIR_MICHELLE]", "").strip()
+        historico.append({"role": "assistant", "content": resposta_limpa})
 
         # Auto-detect if bot is asking for name → set aguardando_identificacao
         resposta_lower = resposta.lower()
@@ -4996,6 +5040,17 @@ def whatsapp_webhook():
                     log_entry["session_id"] = sid
 
                 elif resposta:
+                    # Detect session action markers before sending
+                    acao_encerrar = False
+                    acao_transferir = False
+                    if isinstance(resposta, str):
+                        if "[ENCERRAR_SESSAO]" in resposta:
+                            acao_encerrar = True
+                            resposta = resposta.replace("[ENCERRAR_SESSAO]", "").strip()
+                        if "[TRANSFERIR_MICHELLE]" in resposta:
+                            acao_transferir = True
+                            resposta = resposta.replace("[TRANSFERIR_MICHELLE]", "").strip()
+
                     log_entry["resposta"] = resposta[:200] if isinstance(resposta, str) else str(resposta)[:200]
                     # Single message - normal 30s delay
                     elapsed = (_dtproc.datetime.now() - _dtproc.datetime.fromisoformat(log_entry["ts"])).total_seconds()
@@ -5030,6 +5085,22 @@ def whatsapp_webhook():
                     sess = _whatsapp_sessions.get(phone, {})
                     sess.pop("_responder_audio", None)
                     _whatsapp_sessions[phone] = sess
+
+                    # Execute session actions after sending the message
+                    if sid and acao_transferir:
+                        _time.sleep(2)  # Small delay before transferring
+                        conversapp_transfer_session(sid)
+                        log_entry["acao"] = "transferir_michelle"
+                        # Clear local session
+                        _whatsapp_sessions.pop(phone, None)
+                        print(f"[BOT] Sessão transferida para Michelle: {phone}")
+                    elif sid and acao_encerrar:
+                        _time.sleep(2)  # Small delay before closing
+                        conversapp_complete_session(sid)
+                        log_entry["acao"] = "encerrar_sessao"
+                        # Clear local session
+                        _whatsapp_sessions.pop(phone, None)
+                        print(f"[BOT] Sessão encerrada: {phone}")
             except Exception as e:
                 log_entry["erro"] = str(e)
                 print(f"[WHATSAPP] Erro: {e}")
