@@ -3334,6 +3334,10 @@ CONVERSAPP_API_TOKEN = os.environ.get("CONVERSAPP_API_TOKEN", "")  # Bearer toke
 CONVERSAPP_API_BASE = "https://api.wts.chat"
 CONVERSAPP_CHANNEL_ID = os.environ.get("CONVERSAPP_CHANNEL_ID", "5395dbba-34f9-42a5-852f-77e5e11a7c94")
 
+# ElevenLabs TTS
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "33B4UnXyTNbgLmdEDh5P")
+
 # Business hours (Brazil timezone)
 BOT_HORA_INICIO = 8   # 8h
 BOT_HORA_FIM = 21     # 21h (temporário para teste)
@@ -3566,6 +3570,99 @@ def conversapp_request(method, endpoint, **kwargs):
     headers["Authorization"] = f"Bearer {CONVERSAPP_API_TOKEN}"
     headers["Content-Type"] = "application/json"
     return getattr(requests, method)(url, headers=headers, timeout=30, **kwargs)
+
+
+def elevenlabs_tts(text):
+    """Convert text to speech using ElevenLabs API. Returns audio bytes (mp3) or None."""
+    if not ELEVENLABS_API_KEY:
+        print("[TTS] ElevenLabs API key não configurada")
+        return None
+    try:
+        # Clean text: remove emojis, markdown bold, etc for cleaner speech
+        import re as _re_tts
+        clean = _re_tts.sub(r'[*_~`]', '', text)  # Remove markdown
+        clean = _re_tts.sub(r'[\U0001F300-\U0001F9FF\U00002702-\U000027B0\U0000FE00-\U0000FEFF]', '', clean)  # Remove emojis
+        clean = clean.strip()
+        if not clean or len(clean) < 5:
+            return None
+
+        resp = requests.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
+            headers={
+                "xi-api-key": ELEVENLABS_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json={
+                "text": clean,
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": {
+                    "stability": 0.5,
+                    "similarity_boost": 0.75,
+                }
+            },
+            timeout=30,
+        )
+        if resp.status_code == 200 and len(resp.content) > 1000:
+            print(f"[TTS] Áudio gerado: {len(resp.content)} bytes")
+            return resp.content
+        else:
+            print(f"[TTS] Erro: {resp.status_code} {resp.text[:200]}")
+            return None
+    except Exception as e:
+        print(f"[TTS] Erro: {e}")
+        return None
+
+
+def conversapp_send_audio(phone, audio_bytes, session_id=None):
+    """Send audio message via ConversApp. Uploads to S3 then sends."""
+    if not CONVERSAPP_API_TOKEN or not audio_bytes:
+        return False
+    try:
+        # Step 1: Get upload URL from ConversApp
+        upload_resp = conversapp_request("post", "/core/v1/file/upload",
+            json={"fileName": "audio_ana.mp3", "contentType": "audio/mpeg"})
+        if upload_resp.status_code != 200:
+            print(f"[TTS] Erro ao obter URL de upload: {upload_resp.status_code}")
+            return False
+        upload_data = upload_resp.json()
+        upload_url = upload_data.get("urlUpload")
+        file_key = upload_data.get("keyS3")
+
+        if not upload_url:
+            print("[TTS] URL de upload não recebida")
+            return False
+
+        # Step 2: Upload audio to S3
+        s3_resp = requests.put(upload_url, data=audio_bytes,
+            headers={"Content-Type": "audio/mpeg"}, timeout=30)
+        if s3_resp.status_code not in (200, 201):
+            print(f"[TTS] Erro ao fazer upload S3: {s3_resp.status_code}")
+            return False
+
+        # Step 3: Get the public URL (remove query params from upload URL)
+        file_url = upload_url.split("?")[0]
+
+        # Step 4: Send audio message
+        if session_id:
+            msg_resp = conversapp_request("post", f"/chat/v1/session/{session_id}/message",
+                json={"fileUrl": file_url, "fileName": "audio.mp3"})
+        else:
+            msg_resp = conversapp_request("post", "/chat/v1/message/send",
+                json={
+                    "from": CONVERSAPP_CHANNEL_ID,
+                    "to": phone,
+                    "body": {"fileUrl": file_url, "fileName": "audio.mp3"}
+                })
+
+        if msg_resp.status_code in (200, 201):
+            print(f"[TTS] Áudio enviado para {phone}")
+            return True
+        else:
+            print(f"[TTS] Erro ao enviar áudio: {msg_resp.status_code} {msg_resp.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"[TTS] Erro: {e}")
+        return False
 
 
 def conversapp_get_contact(phone):
@@ -4816,13 +4913,21 @@ def whatsapp_webhook():
     if len(_session_last_activity) > 50:
         _cleanup_old_sessions()
 
-    if phone and message:
-        print(f"[WHATSAPP] De {phone}: {message[:100]}")
+    # Detect message type (TEXT, AUDIO, IMAGE, etc.) for smart reply mode
+    msg_type = ""
+    if isinstance(content, dict):
+        msg_type = (content.get("type") or "").upper()
+    client_sent_audio = msg_type in ("AUDIO", "VOICE", "PTT")
 
-        # Store session_id
+    if phone and message:
+        print(f"[WHATSAPP] De {phone}: {message[:100]} (tipo={msg_type})")
+
+        # Store session_id and audio preference
         if session_id:
             sess = _whatsapp_sessions.get(phone, {"historico": []})
             sess["conversapp_session_id"] = session_id
+            if client_sent_audio:
+                sess["_responder_audio"] = True
             _whatsapp_sessions[phone] = sess
 
         # Process in background thread to not block webhook response
@@ -4875,8 +4980,18 @@ def whatsapp_webhook():
                                 except Exception:
                                     pass
                             _time.sleep(5)
-                        result = whatsapp_send_message(phone, results_msg, session_id=sid)
-                        log_entry["enviado"] = result
+                        # Smart mode: if client sent audio, respond with audio
+                        should_audio = _whatsapp_sessions.get(phone, {}).get("_responder_audio", False)
+                        if should_audio:
+                            audio_data = elevenlabs_tts(results_msg)
+                            if audio_data:
+                                conversapp_send_audio(phone, audio_data, session_id=sid)
+                                log_entry["audio"] = True
+                            else:
+                                whatsapp_send_message(phone, results_msg, session_id=sid)
+                        else:
+                            whatsapp_send_message(phone, results_msg, session_id=sid)
+                        log_entry["enviado"] = True
 
                     log_entry["session_id"] = sid
 
@@ -4898,8 +5013,22 @@ def whatsapp_webhook():
                             _time.sleep(remaining)
 
                     log_entry["session_id"] = sid
-                    result = whatsapp_send_message(phone, resposta, session_id=sid)
-                    log_entry["enviado"] = result
+                    # Smart mode: if client sent audio, respond with audio
+                    should_audio = _whatsapp_sessions.get(phone, {}).get("_responder_audio", False)
+                    if should_audio and isinstance(resposta, str):
+                        # Send text first, then audio
+                        whatsapp_send_message(phone, resposta, session_id=sid)
+                        audio_data = elevenlabs_tts(resposta)
+                        if audio_data:
+                            conversapp_send_audio(phone, audio_data, session_id=sid)
+                            log_entry["audio"] = True
+                    else:
+                        whatsapp_send_message(phone, resposta, session_id=sid)
+                    log_entry["enviado"] = True
+                    # Reset audio flag after responding
+                    sess = _whatsapp_sessions.get(phone, {})
+                    sess.pop("_responder_audio", None)
+                    _whatsapp_sessions[phone] = sess
             except Exception as e:
                 log_entry["erro"] = str(e)
                 print(f"[WHATSAPP] Erro: {e}")
