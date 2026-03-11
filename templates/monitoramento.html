@@ -799,6 +799,16 @@ function toggleGroup(header) {
 async function analyzeConsolidated(numeroProcesso, btn) {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Analisando...';
+    // Show inline status
+    const groupBody = btn.closest('.group-body');
+    let statusDiv = groupBody.querySelector('.analysis-status');
+    if (!statusDiv) {
+        statusDiv = document.createElement('div');
+        statusDiv.className = 'analysis-status';
+        statusDiv.style.cssText = 'background:#fffbeb; border:1px solid #fcd34d; border-radius:8px; padding:14px; margin-bottom:14px; font-size:.85rem;';
+        groupBody.insertBefore(statusDiv, groupBody.firstChild);
+    }
+    statusDiv.innerHTML = '<span class="spinner"></span> Analisando movimentacoes com IA... Aguarde.';
     try {
         const result = await api('/api/legalmail/analisar-consolidado', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -806,20 +816,31 @@ async function analyzeConsolidated(numeroProcesso, btn) {
         });
         if (result.results?.length > 0) {
             const r = result.results[0];
-            if (r.error) { alert('Erro: ' + r.error); }
-            else {
-                const a = r.analysis || {};
-                let msg = `Analise consolidada concluida!\n\nResumo: ${a.resumo_consolidado || '-'}\nUrgencia: ${a.urgencia || '-'}\nAcao: ${a.acao_necessaria || '-'}`;
-                if (a.precisa_peticao && a.pdf_url) {
-                    msg += '\n\nPeticao gerada!';
-                    alert(msg);
-                    window.open(a.pdf_url, '_blank');
-                } else { alert(msg); }
+            if (r.error) {
+                statusDiv.style.background = '#fef2f2';
+                statusDiv.style.borderColor = '#fecaca';
+                statusDiv.innerHTML = '<strong style="color:#dc2626;">Erro:</strong> ' + r.error;
+            } else {
+                statusDiv.remove();
+                // Reload to show the consolidated analysis box
+                loadNotifications();
+                // Auto-open the group after reload
+                setTimeout(() => {
+                    const groups = document.querySelectorAll('.group-header');
+                    groups.forEach(g => {
+                        if (g.querySelector('.group-title')?.textContent?.includes(numeroProcesso)) {
+                            if (!g.classList.contains('open')) g.click();
+                        }
+                    });
+                }, 500);
+                return;
             }
         }
         loadNotifications();
     } catch(e) {
-        alert('Erro: ' + e.message);
+        statusDiv.style.background = '#fef2f2';
+        statusDiv.style.borderColor = '#fecaca';
+        statusDiv.innerHTML = '<strong style="color:#dc2626;">Erro:</strong> ' + e.message;
         btn.disabled = false;
         btn.textContent = 'Analisar Tudo';
     }
@@ -830,18 +851,32 @@ async function regenerarPeticao(numeroProcesso) {
     if (instrucoes === null) return;
     const btn = event.target;
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Gerando...';
+    btn.innerHTML = '<span class="spinner"></span> Gerando peticao...';
+    const groupBody = btn.closest('.group-body');
+    let statusDiv = document.createElement('div');
+    statusDiv.style.cssText = 'background:#fffbeb; border:1px solid #fcd34d; border-radius:8px; padding:14px; margin-bottom:14px; font-size:.85rem;';
+    statusDiv.innerHTML = '<span class="spinner"></span> Gerando peticao com IA... Aguarde.';
+    groupBody.insertBefore(statusDiv, groupBody.firstChild);
     try {
         const result = await api('/api/legalmail/regenerar-peticao', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({numero_processo: numeroProcesso, instrucoes})
         });
         if (result.pdf_url) {
-            alert(`Peticao gerada: ${result.tipo_peticao}`);
-            window.open(result.pdf_url, '_blank');
-        } else if (result.error) { alert('Erro: ' + result.error); }
-    } catch(e) { alert('Erro: ' + e.message); }
-    finally { btn.disabled = false; btn.textContent = 'Gerar Nova Versao'; }
+            statusDiv.style.background = '#f0fdf4';
+            statusDiv.style.borderColor = '#bbf7d0';
+            statusDiv.innerHTML = `<strong style="color:#16a34a;">Peticao gerada!</strong> Tipo: ${result.tipo_peticao} <a href="${result.pdf_url}" target="_blank" style="color:#2563eb; font-weight:600; margin-left:8px;">Baixar PDF</a>`;
+            loadNotifications();
+        } else if (result.error) {
+            statusDiv.style.background = '#fef2f2';
+            statusDiv.style.borderColor = '#fecaca';
+            statusDiv.innerHTML = '<strong style="color:#dc2626;">Erro:</strong> ' + result.error;
+        }
+    } catch(e) {
+        statusDiv.style.background = '#fef2f2';
+        statusDiv.style.borderColor = '#fecaca';
+        statusDiv.innerHTML = '<strong style="color:#dc2626;">Erro:</strong> ' + e.message;
+    } finally { btn.disabled = false; btn.textContent = 'Gerar Nova Versao'; }
 }
 
 function updateStats(notifications) {
@@ -873,18 +908,30 @@ async function analyzeSingle(timestamp) {
 async function analyzeAll(btn) {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Analisando todos...';
+    // Show status banner at top of notifications
+    const notifList = document.getElementById('notifList');
+    const banner = document.createElement('div');
+    banner.style.cssText = 'background:#fffbeb; border:1px solid #fcd34d; border-radius:10px; padding:16px; margin-bottom:16px; font-size:.85rem;';
+    banner.innerHTML = '<span class="spinner"></span> <strong>Analisando todos os processos pendentes...</strong> Isso pode levar alguns minutos.';
+    notifList.insertBefore(banner, notifList.firstChild);
     try {
         const result = await api('/api/legalmail/analisar-consolidado', {
             method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
         });
         const total = result.processos_analisados || 0;
         const wp = (result.results || []).filter(r => r.analysis?.precisa_peticao).length;
-        let msg = `Analise concluida! ${total} processo(s).`;
-        if (wp > 0) msg += `\n${wp} peticao(oes) gerada(s).`;
-        alert(msg);
+        banner.style.background = '#f0fdf4';
+        banner.style.borderColor = '#bbf7d0';
+        let html = `<strong style="color:#16a34a;">Analise concluida!</strong> ${total} processo(s) analisado(s).`;
+        if (wp > 0) html += ` <strong>${wp} peticao(oes) gerada(s).</strong>`;
+        banner.innerHTML = html;
+        setTimeout(() => banner.remove(), 8000);
         loadNotifications();
-    } catch(e) { alert('Erro: ' + e.message); }
-    finally { btn.disabled = false; btn.textContent = 'Analisar Todos'; }
+    } catch(e) {
+        banner.style.background = '#fef2f2';
+        banner.style.borderColor = '#fecaca';
+        banner.innerHTML = '<strong style="color:#dc2626;">Erro:</strong> ' + e.message;
+    } finally { btn.disabled = false; btn.textContent = 'Analisar Todos'; }
 }
 
 async function cleanOldNotifications() {

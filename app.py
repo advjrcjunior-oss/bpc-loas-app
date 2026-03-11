@@ -2340,6 +2340,133 @@ def _load_json_file(filepath, default=None):
     return default
 
 
+def _generate_petition_pdf(texto, pdf_path, numero_processo="", tipo_peticao=""):
+    """Generate a well-formatted petition PDF from text."""
+    doc = fitz.open()
+    lines = texto.split('\n')
+    page = None
+    y = 0
+    margin_left = 72
+    margin_right = 72
+    margin_top = 80
+    margin_bottom = 72
+    line_height_body = 16
+    line_height_title = 20
+    page_width = 595  # A4
+    page_height = 842
+    usable_width = page_width - margin_left - margin_right
+
+    def new_page():
+        nonlocal page, y
+        page = doc.new_page(width=page_width, height=page_height)
+        y = margin_top
+        # Header line
+        page.draw_line(fitz.Point(margin_left, 56), fitz.Point(page_width - margin_right, 56),
+                       color=(0.122, 0.216, 0.388), width=2)
+        # Footer
+        footer_y = page_height - 36
+        page.insert_text(fitz.Point(margin_left, footer_y),
+                         f"Dr. José Roberto da Costa Junior — OAB/SP 378.163",
+                         fontsize=7, fontname="helv", color=(0.5, 0.5, 0.5))
+        page.insert_text(fitz.Point(page_width - margin_right - 30, footer_y),
+                         f"Pág. {len(doc)}",
+                         fontsize=7, fontname="helv", color=(0.5, 0.5, 0.5))
+        return page
+
+    new_page()
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            y += 10
+            if y > page_height - margin_bottom:
+                new_page()
+            continue
+
+        # Detect section titles (all caps lines or lines starting with roman numerals)
+        is_title = False
+        is_section = False
+        fontsize = 11
+        fontname = "helv"
+        color = (0, 0, 0)
+        indent = 0
+
+        # Main title detection (RECURSO ORDINÁRIO, APELAÇÃO, EMBARGOS, etc.)
+        upper_stripped = stripped.upper()
+        title_keywords = ['RECURSO', 'APELAÇÃO', 'AGRAVO', 'EMBARGOS', 'MANIFESTAÇÃO',
+                          'CONTRARRAZÕES', 'IMPUGNAÇÃO', 'PETIÇÃO', 'EXMO', 'EXMA']
+        if stripped == stripped.upper() and len(stripped) > 5 and len(stripped) < 120:
+            is_title = True
+            fontsize = 12
+            fontname = "hebo"  # Helvetica Bold
+            color = (0.122, 0.216, 0.388)  # #1F3763
+
+        # Section headers (I – , II – , III – , etc.)
+        elif re.match(r'^[IVX]+[\s\.\-–—]+', stripped) or re.match(r'^[IVX]+\s*$', stripped):
+            is_section = True
+            fontsize = 11
+            fontname = "hebo"
+            color = (0.122, 0.216, 0.388)
+
+        # Sub-section (1., 2., a), b), etc.)
+        elif re.match(r'^(\d+[\.\)]\s|[a-z]\)\s)', stripped):
+            indent = 20
+
+        # Check if need new page
+        needed = line_height_title if (is_title or is_section) else line_height_body
+        if y + needed > page_height - margin_bottom:
+            new_page()
+
+        # Add spacing before titles/sections
+        if is_title:
+            y += 8
+        elif is_section:
+            y += 6
+
+        # Wrap long lines
+        max_chars = int((usable_width - indent) / (fontsize * 0.45))
+        if max_chars < 20:
+            max_chars = 60
+
+        wrapped = []
+        words = stripped.split()
+        current_line = ""
+        for word in words:
+            test = current_line + (" " if current_line else "") + word
+            if len(test) > max_chars:
+                if current_line:
+                    wrapped.append(current_line)
+                current_line = word
+            else:
+                current_line = test
+        if current_line:
+            wrapped.append(current_line)
+
+        if not wrapped:
+            wrapped = [stripped]
+
+        for wline in wrapped:
+            if y + line_height_body > page_height - margin_bottom:
+                new_page()
+
+            x = margin_left + indent
+            if is_title:
+                # Center titles
+                text_width = fitz.get_text_length(wline, fontname=fontname, fontsize=fontsize)
+                x = (page_width - text_width) / 2
+
+            page.insert_text(fitz.Point(x, y), wline,
+                             fontsize=fontsize, fontname=fontname, color=color)
+            y += line_height_title if (is_title or is_section) else line_height_body
+
+        # Spacing after title
+        if is_title:
+            y += 6
+
+    doc.save(pdf_path)
+    doc.close()
+
+
 def _save_json_file(filepath, data):
     if USE_DB:
         key = os.path.basename(filepath).replace(".json", "")
@@ -3534,41 +3661,40 @@ Regras absolutas:
                     safe_num = re.sub(r'[^\d\-\.]', '', numero)
                     pdf_filename = f"peticao_{safe_num}_{_dt.datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
                     pdf_path = os.path.join(OUTPUT_DIR, pdf_filename)
-
-                    doc = fitz.open()
-                    remaining_text = analysis["texto_peticao"]
-                    while remaining_text.strip():
-                        page = doc.new_page()
-                        text_rect = fitz.Rect(72, 72, page.rect.width - 72, page.rect.height - 72)
-                        rc = page.insert_textbox(text_rect, remaining_text, fontsize=11, fontname="helv")
-                        if rc >= 0:
-                            break
-                        overflow_idx = len(remaining_text) - int(abs(rc))
-                        remaining_text = remaining_text[overflow_idx:]
-                    doc.save(pdf_path)
-                    doc.close()
+                    _generate_petition_pdf(analysis["texto_peticao"], pdf_path, numero, analysis.get("tipo_peticao", ""))
                     analysis["pdf_filename"] = pdf_filename
                     analysis["pdf_url"] = f"/api/download/{pdf_filename}"
                     print(f"  [MONITOR] Petição gerada: {pdf_filename}")
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     print(f"  [MONITOR] Erro ao gerar PDF da petição: {e}")
 
             # Update all notifications of this process with consolidated analysis
+            consolidated_data = {
+                "resumo_consolidado": analysis.get("resumo_consolidado", ""),
+                "tipo_andamento": analysis.get("tipo_andamento", ""),
+                "area_direito": analysis.get("area_direito", ""),
+                "resultado": analysis.get("resultado"),
+                "prazo_dias": analysis.get("prazo_dias", 0),
+                "prazo_fundamento": analysis.get("prazo_fundamento", ""),
+                "data_prazo": analysis.get("data_prazo"),
+                "urgencia": analysis.get("urgencia", "baixa"),
+                "acao_necessaria": analysis.get("acao_necessaria", ""),
+                "precisa_peticao": analysis.get("precisa_peticao", False),
+                "tipo_peticao": analysis.get("tipo_peticao", "nenhuma"),
+                "texto_peticao": analysis.get("texto_peticao"),
+                "observacoes": analysis.get("observacoes", ""),
+                "consolidado": True,
+            }
+            if pdf_filename:
+                consolidated_data["pdf_filename"] = pdf_filename
+                consolidated_data["pdf_url"] = f"/api/download/{pdf_filename}"
+
             for idx in group["indices"]:
                 if idx < len(notifications):
                     notifications[idx]["analyzed"] = True
-                    notifications[idx]["analysis"] = {
-                        "resumo": analysis.get("resumo_consolidado", ""),
-                        "tipo_movimentacao": analysis.get("tipo_andamento", ""),
-                        "prazo_dias": analysis.get("prazo_dias", 0),
-                        "data_prazo": analysis.get("data_prazo"),
-                        "urgencia": analysis.get("urgencia", "baixa"),
-                        "acao_necessaria": analysis.get("acao_necessaria", ""),
-                        "tipo_peticao_sugerida": analysis.get("tipo_peticao", "nenhuma"),
-                        "resultado_merito": analysis.get("resultado"),
-                        "observacoes": analysis.get("observacoes", ""),
-                        "consolidado": True,
-                    }
+                    notifications[idx]["analysis"] = consolidated_data
 
             results.append({
                 "numero_processo": numero,
@@ -3702,19 +3828,7 @@ Responda APENAS com JSON válido (sem markdown, sem ```):
         safe_num = re.sub(r'[^\d\-\.]', '', numero)
         pdf_filename = f"peticao_{safe_num}_{_dt.datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
         pdf_path = os.path.join(OUTPUT_DIR, pdf_filename)
-
-        doc = fitz.open()
-        remaining_text = result.get("texto_peticao", "")
-        while remaining_text.strip():
-            page = doc.new_page()
-            text_rect = fitz.Rect(72, 72, page.rect.width - 72, page.rect.height - 72)
-            rc = page.insert_textbox(text_rect, remaining_text, fontsize=11, fontname="helv")
-            if rc >= 0:
-                break
-            overflow_idx = len(remaining_text) - int(abs(rc))
-            remaining_text = remaining_text[overflow_idx:]
-        doc.save(pdf_path)
-        doc.close()
+        _generate_petition_pdf(result.get("texto_peticao", ""), pdf_path, numero, result.get("tipo_peticao", ""))
 
         return jsonify({
             "status": "ok",
