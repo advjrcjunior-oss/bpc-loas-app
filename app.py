@@ -2483,6 +2483,9 @@ def monitor_check_updates():
 
     # Step 2: Check which processes have new updates
     checked = 0
+    # On rescan or when last_imports is mostly empty, only check recently updated processes
+    yesterday = (_dt.datetime.now() - _dt.timedelta(days=2)).strftime("%Y-%m-%d")
+
     for proc in active_processes:
         idprocesso = str(proc.get("idprocessos", ""))
         numero = proc.get("numero_processo", "?")
@@ -2495,7 +2498,17 @@ def monitor_check_updates():
         # Skip if last_import hasn't changed since our last check
         stored_import = last_imports.get(idprocesso, "")
         if not is_first_run and stored_import and proc_last_import == stored_import:
-            continue  # No new data for this process
+            # Store and skip — no new data
+            continue
+
+        # If we don't have stored data for this process (first run or rescan),
+        # only bother checking if it was updated recently (last 2 days)
+        if not stored_import and not is_first_run:
+            import_date = proc_last_import[:10] if proc_last_import else ""
+            if import_date < yesterday:
+                # Just store the last_import and skip — old process, no need to fetch autos
+                last_imports[idprocesso] = proc_last_import
+                continue
 
         # Update stored last_import
         last_imports[idprocesso] = proc_last_import
@@ -2575,7 +2588,7 @@ def monitor_check_updates():
             checked += 1
 
         # Don't check too many in one run to stay within rate limits
-        if checked >= 30:
+        if checked >= 50:
             print(f"  [MONITOR] Limite de verificacoes atingido, continuando no proximo ciclo")
             break
 
