@@ -3346,6 +3346,7 @@ _whatsapp_locks_lock = threading.Lock()  # Lock for accessing _whatsapp_locks
 _processed_msg_ids = set()  # Track processed message IDs for deduplication
 _processed_msg_ids_lock = threading.Lock()  # Lock for thread-safe dedup
 _session_last_activity = {}  # Track last activity per phone for cleanup
+_paused_phones = {}  # Phones where Ana is paused (human takeover) - {phone: timestamp}
 
 
 def _get_phone_lock(phone):
@@ -4186,6 +4187,12 @@ def whatsapp_processar_mensagem(phone, message):
     msg = message.strip()
     msg_lower = msg.lower()
 
+    # Check if Ana is paused for this phone (human takeover)
+    phone_clean = re.sub(r'[^\d]', '', str(phone))
+    if phone_clean in _paused_phones:
+        print(f"[BOT] Ana pausada para {phone_clean} - atendimento humano")
+        return None
+
     # Check business hours
     if not _is_horario_comercial():
         # Outside hours: send auto-reply only once per session
@@ -4573,6 +4580,48 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
 
 _webhook_log = []  # Store last 20 webhook payloads for debugging
 _bot_debug_log = []  # Store last 20 bot processing logs
+
+@app.route("/api/whatsapp/pausar", methods=["POST", "GET"])
+def whatsapp_pausar():
+    """Pause Ana for a specific phone number (human takeover)."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
+    phone = request.args.get("phone", "") or (request.get_json() or {}).get("phone", "")
+    if not phone:
+        return jsonify({"error": "Informe ?phone=NUMERO"}), 400
+    phone_clean = re.sub(r'[^\d]', '', str(phone))
+    from datetime import datetime as _dt_pause
+    _paused_phones[phone_clean] = str(_dt_pause.now())
+    print(f"[BOT] Ana PAUSADA para {phone_clean}")
+    return jsonify({"status": "pausado", "phone": phone_clean, "message": f"Ana não responde mais para {phone_clean}. Use /retomar para voltar."})
+
+
+@app.route("/api/whatsapp/retomar", methods=["POST", "GET"])
+def whatsapp_retomar():
+    """Resume Ana for a specific phone number."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
+    phone = request.args.get("phone", "") or (request.get_json() or {}).get("phone", "")
+    if not phone:
+        return jsonify({"error": "Informe ?phone=NUMERO"}), 400
+    phone_clean = re.sub(r'[^\d]', '', str(phone))
+    removed = _paused_phones.pop(phone_clean, None)
+    if removed:
+        print(f"[BOT] Ana RETOMADA para {phone_clean}")
+        return jsonify({"status": "retomado", "phone": phone_clean, "message": f"Ana voltou a responder para {phone_clean}."})
+    return jsonify({"status": "ok", "phone": phone_clean, "message": f"Ana já estava ativa para {phone_clean}."})
+
+
+@app.route("/api/whatsapp/pausados")
+def whatsapp_pausados():
+    """List all paused phones."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({"pausados": _paused_phones})
+
 
 @app.route("/api/whatsapp/webhook-log")
 def whatsapp_webhook_log():
