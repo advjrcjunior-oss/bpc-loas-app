@@ -7375,6 +7375,19 @@ else:
     print("[MATERNIDADE] Acompanhamento DESATIVADO - ative com MATERNIDADE_ENABLED=true")
 
 
+# ========== REGISTER BLUEPRINTS ==========
+from mayahub import mayahub_bp, MAYAHUB_API_KEY
+from relatorios import relatorios_bp
+app.register_blueprint(mayahub_bp)
+app.register_blueprint(relatorios_bp)
+
+if MAYAHUB_API_KEY:
+    print(f"[MAYAHUB] Voice AI ATIVADO - Assistant ID: {os.environ.get('MAYAHUB_ASSISTANT_ID', '')}")
+else:
+    print("[MAYAHUB] Voice AI DESATIVADO - configure MAYAHUB_API_KEY")
+
+print("[RELATORIOS] Pagina de relatorios disponivel em /relatorios")
+
 try:
     _startup()
 except Exception as e:
