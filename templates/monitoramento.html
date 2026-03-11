@@ -20,11 +20,27 @@
         .process-card .meta { font-size: .8rem; color: #888; margin-bottom: 8px; }
         .process-card .meta span { margin-right: 16px; }
 
-        .notif-card { background: white; border-radius: 8px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
-        .notif-card.pending { border-left: 4px solid #ff9800; }
-        .notif-card.analyzed { border-left: 4px solid #4caf50; }
-        .notif-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .notif-header h3 { font-size: .9rem; color: #1F3763; }
+        .process-group { background: white; border-radius: 8px; margin-bottom: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.12); overflow: hidden; }
+        .process-group-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; cursor: pointer; user-select: none; transition: background .2s; }
+        .process-group-header:hover { background: #f5f7fa; }
+        .process-group-header h3 { font-size: .95rem; color: #1F3763; margin: 0; }
+        .process-group-header .group-meta { font-size: .8rem; color: #888; margin-top: 4px; }
+        .process-group-header .group-meta span { margin-right: 14px; }
+        .process-group-header .group-badges { display: flex; gap: 6px; align-items: center; }
+        .process-group-header .group-count { background: #4472C4; color: white; padding: 2px 10px; border-radius: 12px; font-size: .75rem; font-weight: 600; }
+        .process-group-header .arrow { transition: transform .2s; font-size: 1.1rem; color: #888; }
+        .process-group-header.open .arrow { transform: rotate(90deg); }
+        .process-group.has-urgent { border-left: 4px solid #f44336; }
+        .process-group.has-pending { border-left: 4px solid #ff9800; }
+        .process-group.all-analyzed { border-left: 4px solid #4caf50; }
+        .process-group-body { display: none; padding: 0 16px 14px 16px; }
+        .process-group-body.open { display: block; }
+
+        .notif-card { background: #f9fafb; border-radius: 6px; padding: 12px; margin-bottom: 8px; border-left: 3px solid #ddd; }
+        .notif-card.pending { border-left-color: #ff9800; }
+        .notif-card.analyzed { border-left-color: #4caf50; }
+        .notif-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+        .notif-header h3 { font-size: .85rem; color: #1F3763; }
         .notif-badge { padding: 2px 10px; border-radius: 12px; font-size: .75rem; font-weight: 600; }
         .badge-alta { background: #fdecea; color: #c62828; }
         .badge-media { background: #fff3e0; color: #e65100; }
@@ -356,51 +372,119 @@ async function loadNotifications() {
             return;
         }
         updateStats(data);
-        el.innerHTML = data.map((n, i) => {
-            const isAnalyzed = n.analyzed && n.analysis;
-            const a = n.analysis || {};
-            const urgClass = a.urgencia === 'alta' ? 'badge-alta' : a.urgencia === 'media' ? 'badge-media' : a.urgencia === 'baixa' ? 'badge-baixa' : 'badge-pending';
 
-            let analysisHtml = '';
-            if (isAnalyzed) {
-                analysisHtml = `
-                    <div class="analysis-box">
-                        <div class="field"><span class="label">Resumo:</span> ${a.resumo || '-'}</div>
-                        <div class="field"><span class="label">Tipo:</span> ${a.tipo_movimentacao || '-'}</div>
-                        <div class="field"><span class="label">Prazo:</span> ${a.prazo_dias ? a.prazo_dias + ' dias' : 'Sem prazo'} ${a.data_prazo ? '(ate ' + a.data_prazo + ')' : ''}</div>
-                        <div class="field"><span class="label">Peticao Sugerida:</span> ${a.tipo_peticao_sugerida || '-'}</div>
-                        ${a.resultado_merito ? `<div class="field"><span class="label">Resultado:</span> <strong>${a.resultado_merito}</strong></div>` : ''}
-                        ${a.observacoes ? `<div class="field"><span class="label">Obs:</span> ${a.observacoes}</div>` : ''}
-                        <div class="action">${a.acao_necessaria || 'Nenhuma acao necessaria'}</div>
-                    </div>`;
+        // Group notifications by processo
+        const groups = {};
+        data.forEach(n => {
+            const key = n.numero_processo || 'desconhecido';
+            if (!groups[key]) {
+                groups[key] = {
+                    numero: key,
+                    tribunal: n.tribunal || '',
+                    polo_ativo: n.polo_ativo || '',
+                    classe: n.classe || '',
+                    idprocesso: n.idprocesso || '',
+                    notifications: []
+                };
             }
+            groups[key].notifications.push(n);
+        });
 
-            const needsPetition = isAnalyzed && a.tipo_peticao_sugerida && a.tipo_peticao_sugerida !== 'nenhuma';
-            const petitionBtn = needsPetition ? `<button class="btn-sm btn-green" style="margin-top:8px;" onclick="createPetition('${n.idprocesso || ''}', '${(a.tipo_peticao_sugerida||'').replace(/'/g,"\\'")}', '${(a.acao_necessaria||'').replace(/'/g,"\\'")}')">Criar Peticao: ${a.tipo_peticao_sugerida}</button>` : '';
+        // Sort groups: urgent first, then by most recent movement
+        const sortedGroups = Object.values(groups).sort((a, b) => {
+            const aUrgent = a.notifications.some(n => n.analysis && n.analysis.urgencia === 'alta');
+            const bUrgent = b.notifications.some(n => n.analysis && n.analysis.urgencia === 'alta');
+            if (aUrgent !== bUrgent) return bUrgent - aUrgent;
+            const aDate = Math.max(...a.notifications.map(n => new Date(n.data_movimentacao || 0).getTime()));
+            const bDate = Math.max(...b.notifications.map(n => new Date(n.data_movimentacao || 0).getTime()));
+            return bDate - aDate;
+        });
+
+        el.innerHTML = sortedGroups.map((group, gi) => {
+            const total = group.notifications.length;
+            const pendingCount = group.notifications.filter(n => !n.analyzed).length;
+            const analyzedCount = total - pendingCount;
+            const hasUrgent = group.notifications.some(n => n.analysis && n.analysis.urgencia === 'alta');
+            const allAnalyzed = pendingCount === 0;
+            const borderClass = hasUrgent ? 'has-urgent' : allAnalyzed ? 'all-analyzed' : 'has-pending';
+            const dates = group.notifications.map(n => n.data_movimentacao || '').filter(Boolean);
+            const mostRecent = dates.sort().reverse()[0] || '-';
+
+            // Render individual notifications inside group
+            const notifsHtml = group.notifications
+                .sort((a, b) => (b.data_movimentacao || '').localeCompare(a.data_movimentacao || ''))
+                .map((n, i) => {
+                    const isAnalyzed = n.analyzed && n.analysis;
+                    const a = n.analysis || {};
+                    const urgClass = a.urgencia === 'alta' ? 'badge-alta' : a.urgencia === 'media' ? 'badge-media' : a.urgencia === 'baixa' ? 'badge-baixa' : 'badge-pending';
+
+                    let analysisHtml = '';
+                    if (isAnalyzed) {
+                        analysisHtml = `
+                            <div class="analysis-box">
+                                <div class="field"><span class="label">Resumo:</span> ${a.resumo || '-'}</div>
+                                <div class="field"><span class="label">Tipo:</span> ${a.tipo_movimentacao || '-'}</div>
+                                <div class="field"><span class="label">Prazo:</span> ${a.prazo_dias ? a.prazo_dias + ' dias' : 'Sem prazo'} ${a.data_prazo ? '(ate ' + a.data_prazo + ')' : ''}</div>
+                                <div class="field"><span class="label">Peticao Sugerida:</span> ${a.tipo_peticao_sugerida || '-'}</div>
+                                ${a.resultado_merito ? `<div class="field"><span class="label">Resultado:</span> <strong>${a.resultado_merito}</strong></div>` : ''}
+                                ${a.observacoes ? `<div class="field"><span class="label">Obs:</span> ${a.observacoes}</div>` : ''}
+                                <div class="action">${a.acao_necessaria || 'Nenhuma acao necessaria'}</div>
+                            </div>`;
+                    }
+
+                    const needsPetition = isAnalyzed && a.tipo_peticao_sugerida && a.tipo_peticao_sugerida !== 'nenhuma';
+                    const petitionBtn = needsPetition ? `<button class="btn-sm btn-green" style="margin-top:8px;" onclick="createPetition('${n.idprocesso || ''}', '${(a.tipo_peticao_sugerida||'').replace(/'/g,"\\'")}', '${(a.acao_necessaria||'').replace(/'/g,"\\'")}')">Criar Peticao: ${a.tipo_peticao_sugerida}</button>` : '';
+
+                    return `
+                        <div class="notif-card ${isAnalyzed ? 'analyzed' : 'pending'}">
+                            <div class="notif-header">
+                                <div>
+                                    ${n.titulo_movimentacao ? `<h3>${n.titulo_movimentacao}</h3>` : '<h3>Movimentacao</h3>'}
+                                    <div class="meta"><span><strong>Data:</strong> ${n.data_movimentacao || '-'}</span></div>
+                                </div>
+                                <div>
+                                    ${isAnalyzed ? `<span class="notif-badge ${urgClass}">${a.urgencia || 'analisado'}</span>` : `<span class="notif-badge badge-pending">pendente</span>`}
+                                </div>
+                            </div>
+                            ${!isAnalyzed ? `<button class="btn-sm btn-orange" onclick="analyzeSingle('${n.timestamp || i}')">Analisar</button>` : ''}
+                            ${analysisHtml}
+                            ${petitionBtn}
+                        </div>`;
+                }).join('');
 
             return `
-                <div class="notif-card ${isAnalyzed ? 'analyzed' : 'pending'}">
-                    <div class="notif-header">
-                        <h3>${n.numero_processo || 'Processo desconhecido'} - ${n.tribunal || ''}</h3>
+                <div class="process-group ${borderClass}">
+                    <div class="process-group-header" onclick="toggleGroup(this)">
                         <div>
-                            ${isAnalyzed ? `<span class="notif-badge ${urgClass}">${a.urgencia || 'analisado'}</span>` : `<span class="notif-badge badge-pending">pendente</span>`}
+                            <h3>${group.numero} - ${group.tribunal}</h3>
+                            <div class="group-meta">
+                                <span><strong>Parte:</strong> ${group.polo_ativo}</span>
+                                <span><strong>Classe:</strong> ${group.classe}</span>
+                                <span><strong>Ultima mov:</strong> ${mostRecent}</span>
+                            </div>
+                        </div>
+                        <div class="group-badges">
+                            ${hasUrgent ? '<span class="notif-badge badge-alta">urgente</span>' : ''}
+                            ${pendingCount > 0 ? `<span class="notif-badge badge-pending">${pendingCount} pendente${pendingCount > 1 ? 's' : ''}</span>` : ''}
+                            ${analyzedCount > 0 ? `<span class="notif-badge badge-done">${analyzedCount} analisado${analyzedCount > 1 ? 's' : ''}</span>` : ''}
+                            <span class="group-count">${total} mov.</span>
+                            <span class="arrow">&#9654;</span>
                         </div>
                     </div>
-                    ${n.titulo_movimentacao ? `<div style="font-size:.85rem; color:#1F3763; font-weight:600; margin-bottom:4px;">${n.titulo_movimentacao}</div>` : ''}
-                    <div class="meta">
-                        <span><strong>Data mov:</strong> ${n.data_movimentacao || '-'}</span>
-                        <span><strong>Recebido:</strong> ${(n.timestamp || '').substring(0,16)}</span>
-                        <span><strong>Polo Ativo:</strong> ${n.polo_ativo || '-'}</span>
-                        <span><strong>Classe:</strong> ${n.classe || '-'}</span>
+                    <div class="process-group-body">
+                        ${notifsHtml}
                     </div>
-                    ${!isAnalyzed ? `<button class="btn-sm btn-orange" style="margin-top:8px;" onclick="analyzeSingle('${n.timestamp || i}')">Analisar</button>` : ''}
-                    ${analysisHtml}
-                    ${petitionBtn}
                 </div>`;
         }).join('');
     } catch(e) {
         el.innerHTML = `<div class="empty-state" style="color:#c62828;">Erro: ${e.message}</div>`;
     }
+}
+
+function toggleGroup(header) {
+    header.classList.toggle('open');
+    const body = header.nextElementSibling;
+    body.classList.toggle('open');
 }
 
 function updateStats(notifications) {
