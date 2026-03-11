@@ -2479,12 +2479,12 @@ def monitor_check_updates():
     print(f"  [MONITOR] {len(processes)} processos total, {len(active_processes)} ativos")
 
     if is_first_run:
-        print(f"  [MONITOR] PRIMEIRA EXECUCAO - registrando movimentacoes existentes (sem gerar alertas)")
+        print(f"  [MONITOR] PRIMEIRA EXECUCAO - registrando processos e notificando movimentacoes recentes")
 
     # Step 2: Check which processes have new updates
     checked = 0
-    # On rescan or when last_imports is mostly empty, only check recently updated processes
-    yesterday = (_dt.datetime.now() - _dt.timedelta(days=2)).strftime("%Y-%m-%d")
+    # Only check processes updated in the last 2 days (avoids wasting rate limit on old ones)
+    cutoff_date = (_dt.datetime.now() - _dt.timedelta(days=2)).strftime("%Y-%m-%d")
 
     for proc in active_processes:
         idprocesso = str(proc.get("idprocessos", ""))
@@ -2497,16 +2497,14 @@ def monitor_check_updates():
 
         # Skip if last_import hasn't changed since our last check
         stored_import = last_imports.get(idprocesso, "")
-        if not is_first_run and stored_import and proc_last_import == stored_import:
-            # Store and skip — no new data
-            continue
+        if stored_import and proc_last_import == stored_import:
+            continue  # No new data for this process
 
-        # If we don't have stored data for this process (first run or rescan),
-        # only bother checking if it was updated recently (last 2 days)
-        if not stored_import and not is_first_run:
+        # If we don't have stored data, only check recently updated processes
+        if not stored_import:
             import_date = proc_last_import[:10] if proc_last_import else ""
-            if import_date < yesterday:
-                # Just store the last_import and skip — old process, no need to fetch autos
+            if import_date < cutoff_date:
+                # Old process — just store last_import and skip
                 last_imports[idprocesso] = proc_last_import
                 continue
 
@@ -2522,70 +2520,63 @@ def monitor_check_updates():
         current_ids = [str(m.get("idmovimentacoes", "")) for m in autos]
         known_ids = set(known.get(idprocesso, []))
 
-        if is_first_run:
-            # First run: just store all IDs as known, don't create notifications
-            known[idprocesso] = current_ids
-            checked += 1
-        else:
-            # Subsequent runs: find truly new movements
-            new_movements = [m for m in autos if str(m.get("idmovimentacoes", "")) not in known_ids]
+        # Find movements we haven't seen before
+        new_movements = [m for m in autos if str(m.get("idmovimentacoes", "")) not in known_ids]
 
-            # Filter: only movements from yesterday or today
-            yesterday = (_dt.datetime.now() - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
-            today = _dt.datetime.now().strftime("%Y-%m-%d")
-            new_movements = [m for m in new_movements
-                             if (m.get("data_movimentacao", "") or "")[:10] >= yesterday]
+        # Filter: only movements from last 2 days (avoid flooding with old ones)
+        mov_cutoff = (_dt.datetime.now() - _dt.timedelta(days=2)).strftime("%Y-%m-%d")
+        new_movements = [m for m in new_movements
+                         if (m.get("data_movimentacao", "") or "")[:10] >= mov_cutoff]
 
-            # Sort by date (most recent last)
-            new_movements.sort(key=lambda m: m.get("data_movimentacao", "") or "")
+        # Sort by date (most recent last)
+        new_movements.sort(key=lambda m: m.get("data_movimentacao", "") or "")
 
-            if new_movements:
-                print(f"  [MONITOR] {len(new_movements)} nova(s) movimentacao(oes) em {numero}")
+        if new_movements:
+            print(f"  [MONITOR] {len(new_movements)} nova(s) movimentacao(oes) em {numero}")
 
-                for mov in new_movements:
-                    mov_id = str(mov.get("idmovimentacoes", ""))
-                    titulo = mov.get("titulo", "Movimentacao")
-                    data_mov = mov.get("data_movimentacao", "")
+            for mov in new_movements:
+                mov_id = str(mov.get("idmovimentacoes", ""))
+                titulo = mov.get("titulo", "Movimentacao")
+                data_mov = mov.get("data_movimentacao", "")
 
-                    # Create notification
-                    notif = {
-                        "type": "intimacao",
-                        "source": "monitor_auto",
-                        "timestamp": _dt.datetime.now().isoformat(),
-                        "numero_processo": numero,
-                        "tribunal": tribunal,
-                        "sistema": proc.get("sistema_tribunal", ""),
-                        "polo_ativo": proc.get("poloativo_nome", ""),
-                        "polo_passivo": proc.get("polopassivo_nome", ""),
-                        "classe": proc.get("nome_classe", ""),
-                        "idprocesso": idprocesso,
+                # Create notification
+                notif = {
+                    "type": "intimacao",
+                    "source": "monitor_auto",
+                    "timestamp": _dt.datetime.now().isoformat(),
+                    "numero_processo": numero,
+                    "tribunal": tribunal,
+                    "sistema": proc.get("sistema_tribunal", ""),
+                    "polo_ativo": proc.get("poloativo_nome", ""),
+                    "polo_passivo": proc.get("polopassivo_nome", ""),
+                    "classe": proc.get("nome_classe", ""),
+                    "idprocesso": idprocesso,
+                    "idmovimentacoes": mov_id,
+                    "titulo_movimentacao": titulo,
+                    "data_movimentacao": data_mov,
+                    "documentos": [{
+                        "tipo": "movement",
+                        "title": titulo,
+                        "movement_date": data_mov,
                         "idmovimentacoes": mov_id,
-                        "titulo_movimentacao": titulo,
-                        "data_movimentacao": data_mov,
-                        "documentos": [{
-                            "tipo": "movement",
-                            "title": titulo,
-                            "movement_date": data_mov,
-                            "idmovimentacoes": mov_id,
-                        }],
-                        "analyzed": False,
-                        "analysis": None,
-                    }
+                    }],
+                    "analyzed": False,
+                    "analysis": None,
+                }
 
-                    # Fetch movement text (for manual analysis later) but do NOT auto-analyze
-                    time.sleep(2)
-                    texto = monitor_fetch_movement_text(mov_id)
-                    if texto:
-                        notif["texto_movimentacao"] = texto[:8000]
-                    print(f"    -> {titulo[:80]}")
+                # Fetch movement text (for analysis later)
+                time.sleep(2)
+                texto = monitor_fetch_movement_text(mov_id)
+                if texto:
+                    notif["texto_movimentacao"] = texto[:8000]
+                print(f"    -> {titulo[:80]}")
 
-                    notifications.append(notif)
-                    new_count += 1
+                notifications.append(notif)
+                new_count += 1
 
-                # Update known movements
-                known[idprocesso] = current_ids
-
-            checked += 1
+        # Always update known movements (even on first run)
+        known[idprocesso] = current_ids
+        checked += 1
 
         # Don't check too many in one run to stay within rate limits
         if checked >= 50:
