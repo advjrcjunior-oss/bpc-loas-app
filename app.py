@@ -22,9 +22,15 @@ import re
 import json
 import glob
 import base64
+import hashlib
+import hmac
+import secrets
 import traceback
 import tempfile
 import requests
+import time as _time_module
+from functools import wraps
+from collections import defaultdict
 from flask import Flask, render_template, request, jsonify, send_from_directory
 
 import shutil
@@ -38,6 +44,111 @@ import openpyxl
 import helpers
 
 app = Flask(__name__)
+
+# ==================== SECURITY ====================
+
+# Debug/admin token from environment (NEVER hardcoded)
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", secrets.token_urlsafe(32))
+if not os.environ.get("ADMIN_TOKEN"):
+    print(f"[SECURITY] ADMIN_TOKEN não configurado. Token temporário gerado: {ADMIN_TOKEN}")
+    print(f"[SECURITY] Configure ADMIN_TOKEN no Railway para um token fixo.")
+
+# Webhook secret for validating incoming webhooks
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+
+def _check_admin_token():
+    """Validate admin token from query param or header."""
+    token = request.args.get("token", "") or request.headers.get("X-Admin-Token", "")
+    if not token or not hmac.compare_digest(token, ADMIN_TOKEN):
+        return False
+    return True
+
+def require_admin(f):
+    """Decorator to require admin token on endpoints."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not _check_admin_token():
+            return jsonify({"error": "unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+# Rate limiting (in-memory, per IP)
+_rate_limit_store = defaultdict(list)
+_rate_limit_lock = __import__('threading').Lock()
+
+def _rate_limit_check(key, max_requests=30, window_seconds=60):
+    """Simple rate limiter. Returns True if request is allowed."""
+    now = _time_module.time()
+    with _rate_limit_lock:
+        _rate_limit_store[key] = [t for t in _rate_limit_store[key] if now - t < window_seconds]
+        if len(_rate_limit_store[key]) >= max_requests:
+            return False
+        _rate_limit_store[key].append(now)
+        return True
+
+@app.before_request
+def _global_rate_limit():
+    """Global rate limit: 60 requests/minute per IP for API endpoints."""
+    if request.path.startswith("/api/"):
+        ip = request.remote_addr or "unknown"
+        if not _rate_limit_check(f"global:{ip}", max_requests=60, window_seconds=60):
+            return jsonify({"error": "rate limit exceeded"}), 429
+
+# Atomic JSON file operations with backup
+def _safe_json_save(filepath, data, lock=None):
+    """Save JSON atomically: write to .tmp, then rename. Creates .bak backup."""
+    def _do_save():
+        tmp_path = filepath + ".tmp"
+        bak_path = filepath + ".bak"
+        try:
+            # Backup existing file
+            if os.path.exists(filepath):
+                shutil.copy2(filepath, bak_path)
+            # Write to temp file first
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            # Atomic rename (on Windows, need to remove first)
+            if os.path.exists(filepath):
+                os.replace(tmp_path, filepath)
+            else:
+                os.rename(tmp_path, filepath)
+        except Exception as e:
+            print(f"[SECURITY] Erro ao salvar {filepath}: {e}")
+            # Try to restore from backup
+            if os.path.exists(bak_path) and not os.path.exists(filepath):
+                shutil.copy2(bak_path, filepath)
+            raise
+    if lock:
+        with lock:
+            _do_save()
+    else:
+        _do_save()
+
+def _safe_json_load(filepath, lock=None):
+    """Load JSON with fallback to .bak if corrupted."""
+    def _do_load():
+        try:
+            if os.path.exists(filepath):
+                with open(filepath, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except (json.JSONDecodeError, Exception) as e:
+            print(f"[SECURITY] Arquivo corrompido {filepath}: {e}")
+            bak_path = filepath + ".bak"
+            if os.path.exists(bak_path):
+                print(f"[SECURITY] Restaurando backup {bak_path}")
+                try:
+                    with open(bak_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    shutil.copy2(bak_path, filepath)
+                    return data
+                except Exception as e2:
+                    print(f"[SECURITY] Backup também corrompido: {e2}")
+        return {}
+    if lock:
+        with lock:
+            return _do_load()
+    else:
+        return _do_load()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
@@ -907,6 +1018,9 @@ def extract_json(text):
 
 @app.route("/api/download/<path:filename>")
 def download(filename):
+    # Block path traversal attempts
+    if ".." in filename or filename.startswith("/") or filename.startswith("\\"):
+        return jsonify({"error": "invalid filename"}), 400
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
 
@@ -1994,9 +2108,10 @@ def legalmail_criar_rascunho(pasta, tribunal, sistema, comarca, assunto=None,
 
 
 @app.route("/api/debug/key", methods=["GET"])
+@require_admin
 def debug_key():
     key = LEGALMAIL_API_KEY
-    return jsonify({"key_length": len(key), "key_preview": key[:8] + "..." + key[-4:] if key else "VAZIO"})
+    return jsonify({"key_configured": bool(key), "key_length": len(key)})
 
 
 @app.route("/api/legalmail/tribunais", methods=["GET"])
@@ -3303,10 +3418,11 @@ Escreva uma mensagem curta, clara e em linguagem simples (sem juridiquês) para 
 
 
 @app.route("/api/health")
+@require_admin
 def health_check():
     """Test API connectivity."""
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    result = {"api_key_set": bool(api_key), "api_key_prefix": api_key[:12] + "..." if api_key else "empty"}
+    result = {"api_key_set": bool(api_key)}
     try:
         client_ai = anthropic.Anthropic(api_key=api_key, timeout=30.0)
         response = client_ai.messages.create(
@@ -3393,24 +3509,12 @@ FOLLOWUP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "follow
 _followup_file_lock = threading.Lock()
 
 def _followup_load():
-    """Load follow-up queue from disk (thread-safe)."""
-    with _followup_file_lock:
-        try:
-            if os.path.exists(FOLLOWUP_FILE):
-                with open(FOLLOWUP_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-        except Exception as e:
-            print(f"[FOLLOWUP] Erro ao carregar fila: {e}")
-        return {}
+    """Load follow-up queue from disk (thread-safe, with backup fallback)."""
+    return _safe_json_load(FOLLOWUP_FILE, lock=_followup_file_lock)
 
 def _followup_save(queue):
-    """Save follow-up queue to disk (thread-safe)."""
-    with _followup_file_lock:
-        try:
-            with open(FOLLOWUP_FILE, "w", encoding="utf-8") as f:
-                json.dump(queue, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"[FOLLOWUP] Erro ao salvar fila: {e}")
+    """Save follow-up queue to disk (thread-safe, atomic with backup)."""
+    _safe_json_save(FOLLOWUP_FILE, queue, lock=_followup_file_lock)
 
 def _followup_add(phone, nome, docs_pendentes, data_prometida=None, session_id=None, contexto=""):
     """Add or update a follow-up entry for a client."""
@@ -5066,8 +5170,7 @@ def _followup_get_last_session(contact_id):
 @app.route("/api/followup/fila", methods=["GET"])
 def followup_fila():
     """View the follow-up queue."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     queue = _followup_load()
     return jsonify({"total": len(queue), "clientes": queue})
@@ -5076,8 +5179,7 @@ def followup_fila():
 @app.route("/api/followup/adicionar", methods=["POST"])
 def followup_adicionar():
     """Manually add a client to the follow-up queue."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json() or {}
     phone = data.get("phone", "")
@@ -5095,8 +5197,7 @@ def followup_adicionar():
 @app.route("/api/followup/remover", methods=["POST", "DELETE"])
 def followup_remover():
     """Remove a client from the follow-up queue."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     phone = request.args.get("phone", "") or (request.get_json() or {}).get("phone", "")
     if not phone:
@@ -5108,8 +5209,7 @@ def followup_remover():
 @app.route("/api/followup/executar", methods=["POST", "GET"])
 def followup_executar():
     """Run follow-up: scan ConversApp tags + local queue, send personalized messages."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
 
     hoje = _dt_followup.date.today()
@@ -5311,8 +5411,7 @@ def followup_executar():
 @app.route("/api/whatsapp/pausar", methods=["POST", "GET"])
 def whatsapp_pausar():
     """Pause Ana for a specific phone number (human takeover)."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     phone = request.args.get("phone", "") or (request.get_json() or {}).get("phone", "")
     if not phone:
@@ -5327,8 +5426,7 @@ def whatsapp_pausar():
 @app.route("/api/whatsapp/retomar", methods=["POST", "GET"])
 def whatsapp_retomar():
     """Resume Ana for a specific phone number."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     phone = request.args.get("phone", "") or (request.get_json() or {}).get("phone", "")
     if not phone:
@@ -5344,8 +5442,7 @@ def whatsapp_retomar():
 @app.route("/api/whatsapp/pausados")
 def whatsapp_pausados():
     """List all paused phones."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     return jsonify({"pausados": _paused_phones})
 
@@ -5353,16 +5450,14 @@ def whatsapp_pausados():
 @app.route("/api/whatsapp/webhook-log")
 def whatsapp_webhook_log():
     """View last received webhook payloads for debugging."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     return jsonify(_webhook_log)
 
 @app.route("/api/whatsapp/debug-log")
 def whatsapp_debug_log():
     """View last bot processing logs for debugging."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     return jsonify(_bot_debug_log)
 
@@ -5372,19 +5467,34 @@ def whatsapp_webhook():
 
     ConversApp sends MESSAGE_RECEIVED events when clients send messages.
     Configure webhook in ConversApp: Settings > Integrations > Webhooks
-    URL: https://your-app.railway.app/api/whatsapp/webhook
+    URL: https://your-app.railway.app/api/whatsapp/webhook?secret=YOUR_WEBHOOK_SECRET
     Event: MESSAGE_RECEIVED
     """
-    data = request.get_json() or {}
-    # Store for debug
+    # Validate webhook origin
+    if WEBHOOK_SECRET:
+        incoming_secret = request.args.get("secret", "")
+        if not hmac.compare_digest(incoming_secret, WEBHOOK_SECRET):
+            print(f"[SECURITY] Webhook rejeitado - secret inválido de {request.remote_addr}")
+            return jsonify({"error": "forbidden"}), 403
+
+    # Rate limit webhooks: max 120/min (prevents abuse)
+    ip = request.remote_addr or "unknown"
+    if not _rate_limit_check(f"webhook:{ip}", max_requests=120, window_seconds=60):
+        return jsonify({"error": "rate limit"}), 429
+
+    data = request.get_json(force=False, silent=True) or {}
+    if not data:
+        return jsonify({"error": "invalid payload"}), 400
+
+    # Store for debug (limit stored data size)
     import datetime as _dtlog
-    _webhook_log.append({"ts": str(_dtlog.datetime.now()), "data": data})
+    _webhook_log.append({"ts": str(_dtlog.datetime.now()), "ip": ip, "data": data})
     if len(_webhook_log) > 20:
         _webhook_log.pop(0)
 
-    # Log the raw webhook for debugging
+    # Log webhook (truncate to avoid PII leaking in logs)
     import json as _json
-    print(f"[WHATSAPP] Webhook RAW: {_json.dumps(data, ensure_ascii=False, default=str)[:2000]}")
+    print(f"[WHATSAPP] Webhook de {ip}: eventType={data.get('eventType', 'unknown')}")
 
     # ConversApp real payload format (NO "data" wrapper):
     # { "eventType": "MESSAGE_RECEIVED", "content": { "text": "...", "direction": "FROM_HUB",
@@ -5536,6 +5646,12 @@ def whatsapp_webhook():
             return jsonify({"status": "ok", "action": "duplicate"})
         if msg_id:
             _processed_msg_ids.add(msg_id)
+            # Limit dedup set size to prevent memory growth
+            if len(_processed_msg_ids) > 5000:
+                # Remove oldest half (set is unordered, but this prevents unbounded growth)
+                with _processed_msg_ids_lock:
+                    excess = list(_processed_msg_ids)[:2500]
+                    _processed_msg_ids.difference_update(excess)
 
     # Periodic cleanup of old sessions
     from datetime import datetime as _dt_cleanup
@@ -5874,8 +5990,7 @@ Seja curta e direta. Máximo 3 linhas.""",
 @app.route("/api/whatsapp/test", methods=["POST"])
 def whatsapp_test():
     """Test the bot logic without WhatsApp - send a message and get the response."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json() or {}
     phone = data.get("phone", "test")
@@ -5888,13 +6003,12 @@ def whatsapp_test():
 
 
 @app.route("/api/whatsapp/status")
+@require_admin
 def whatsapp_status():
     """Check WhatsApp bot configuration status."""
     return jsonify({
         "helena_token": bool(CONVERSAPP_API_TOKEN),
-        "helena_channel": CONVERSAPP_CHANNEL_ID or "(não configurado)",
         "active_sessions": len(_whatsapp_sessions),
-        "webhook_url": "/api/whatsapp/webhook",
         "gmail_configured": bool(GMAIL_REFRESH_TOKEN and GMAIL_CLIENT_ID),
     })
 
@@ -5902,8 +6016,7 @@ def whatsapp_status():
 @app.route("/api/whatsapp/test-gmail")
 def whatsapp_test_gmail():
     """Test Gmail search for a name."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     nome = request.args.get("nome", "")
     if not nome:
@@ -5921,8 +6034,7 @@ def whatsapp_test_gmail():
 @app.route("/api/whatsapp/conversapp-fields")
 def whatsapp_conversapp_fields():
     """List ConversApp custom fields and tags (to discover key names)."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     fields = conversapp_get_custom_fields()
     tags = conversapp_get_tags()
@@ -5932,8 +6044,7 @@ def whatsapp_conversapp_fields():
 @app.route("/api/whatsapp/conversapp-contact")
 def whatsapp_conversapp_contact():
     """Look up a contact in ConversApp by phone number."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     phone = request.args.get("phone", "")
     if not phone:
@@ -5943,6 +6054,7 @@ def whatsapp_conversapp_contact():
 
 
 @app.route("/api/whatsapp/setup-webhook", methods=["POST"])
+@require_admin
 def whatsapp_setup_webhook():
     """Register webhook on ConversApp to receive messages.
 
@@ -6239,35 +6351,22 @@ else:
 # ========== SALÁRIO MATERNIDADE - ACOMPANHAMENTO AUTOMÁTICO ==========
 
 MATERNIDADE_ENABLED = os.environ.get("MATERNIDADE_ENABLED", "false").lower() == "true"
-MATERNIDADE_TAG_ID = "36d321f0-9c43-49e2-85d3-ae70aa3ee6b1"  # Tag "salário maternidade"
-MATERNIDADE_GPS_TAG_ID = os.environ.get("MATERNIDADE_GPS_TAG_ID", "")  # Tag "Gerar GPS" - preencher depois
+MATERNIDADE_TAG_ID = "664ffa40-4b5b-4d9e-9f3d-e2e709d1195a"  # Tag "Salário maternidade"
+MATERNIDADE_GPS_TAG_ID = os.environ.get("MATERNIDADE_GPS_TAG_ID", "f9d9c6a8-59e9-4e4b-bf9a-d2a689dbddd7")  # Tag "Gerar GPS"
 MATERNIDADE_KEY_NIT = os.environ.get("MATERNIDADE_KEY_NIT", "nit")  # Key do campo NIT no ConversApp
-MATERNIDADE_KEY_DATA_PARTO = os.environ.get("MATERNIDADE_KEY_DATA_PARTO", "data-prevista-do-parto")  # Key do campo data parto
+MATERNIDADE_KEY_DATA_PARTO = os.environ.get("MATERNIDADE_KEY_DATA_PARTO", "data-prevista-do-par")  # Key do campo data parto
 MATERNIDADE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maternidade_queue.json")
 MATERNIDADE_MAX_DIA = int(os.environ.get("MATERNIDADE_MAX_DIA", "5"))  # Máx mensagens por dia
 _maternidade_file_lock = threading.Lock()
 
 
 def _maternidade_load():
-    """Load maternity tracking queue from disk (thread-safe)."""
-    with _maternidade_file_lock:
-        try:
-            if os.path.exists(MATERNIDADE_FILE):
-                with open(MATERNIDADE_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-        except Exception as e:
-            print(f"[MATERNIDADE] Erro ao carregar: {e}")
-        return {}
-
+    """Load maternity tracking queue from disk (thread-safe, with backup fallback)."""
+    return _safe_json_load(MATERNIDADE_FILE, lock=_maternidade_file_lock)
 
 def _maternidade_save(queue):
-    """Save maternity tracking queue to disk (thread-safe)."""
-    with _maternidade_file_lock:
-        try:
-            with open(MATERNIDADE_FILE, "w", encoding="utf-8") as f:
-                json.dump(queue, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"[MATERNIDADE] Erro ao salvar: {e}")
+    """Save maternity tracking queue to disk (thread-safe, atomic with backup)."""
+    _safe_json_save(MATERNIDADE_FILE, queue, lock=_maternidade_file_lock)
 
 
 def _maternidade_generate_engagement(entry, tipo="engajamento"):
@@ -6643,8 +6742,7 @@ def _maternidade_process():
 @app.route("/api/maternidade/fila", methods=["GET"])
 def maternidade_fila():
     """View the maternity tracking queue."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     queue = _maternidade_load()
     return jsonify({"total": len(queue), "clientes": queue})
@@ -6653,8 +6751,7 @@ def maternidade_fila():
 @app.route("/api/maternidade/executar", methods=["POST", "GET"])
 def maternidade_executar():
     """Run maternity check manually."""
-    token = request.args.get("token", "")
-    if token != "jrc2026debug":
+    if not _check_admin_token():
         return jsonify({"error": "unauthorized"}), 401
     resultados = _maternidade_process()
     queue = _maternidade_load()
