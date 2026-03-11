@@ -3535,7 +3535,13 @@ PERGUNTAS COMUNS APÓS INFORMAR MOVIMENTAÇÃO
 "O processo segue o trâmite normal da Justiça. Cada etapa tem seu prazo e o escritório está acompanhando tudo. Tem mais alguma dúvida que posso te ajudar?"
 
 "Preciso fazer alguma coisa?"
-"Por enquanto não. Caso precise de algum documento ou ação sua, o escritório vai te avisar com antecedência."
+"Por enquanto não. Caso precise de algo da sua parte, o escritório vai te contatar com as orientações necessárias."
+
+REGRA GERAL PARA PERGUNTAS SOBRE RESULTADO E VALORES:
+Nunca confirmar resultado, valores ou prazos.
+Nunca criar expectativa positiva ou negativa.
+Responder de forma acolhedora, curta e encerrar o assunto com naturalidade.
+Não mencionar equipe ou advogado a menos que seja o único caminho.
 
 ---
 
