@@ -3390,24 +3390,27 @@ def conversapp_transfer_session(session_id, user_id=None):
 import datetime as _dt_followup
 
 FOLLOWUP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "followup_queue.json")
+_followup_file_lock = threading.Lock()
 
 def _followup_load():
-    """Load follow-up queue from disk."""
-    try:
-        if os.path.exists(FOLLOWUP_FILE):
-            with open(FOLLOWUP_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"[FOLLOWUP] Erro ao carregar fila: {e}")
-    return {}
+    """Load follow-up queue from disk (thread-safe)."""
+    with _followup_file_lock:
+        try:
+            if os.path.exists(FOLLOWUP_FILE):
+                with open(FOLLOWUP_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"[FOLLOWUP] Erro ao carregar fila: {e}")
+        return {}
 
 def _followup_save(queue):
-    """Save follow-up queue to disk."""
-    try:
-        with open(FOLLOWUP_FILE, "w", encoding="utf-8") as f:
-            json.dump(queue, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[FOLLOWUP] Erro ao salvar fila: {e}")
+    """Save follow-up queue to disk (thread-safe)."""
+    with _followup_file_lock:
+        try:
+            with open(FOLLOWUP_FILE, "w", encoding="utf-8") as f:
+                json.dump(queue, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[FOLLOWUP] Erro ao salvar fila: {e}")
 
 def _followup_add(phone, nome, docs_pendentes, data_prometida=None, session_id=None, contexto=""):
     """Add or update a follow-up entry for a client."""
@@ -3449,12 +3452,23 @@ def _followup_detect_date(text):
     hoje = _dt_followup.date.today()
     text_lower = text.lower().strip()
 
+    # "hoje"
+    if text_lower in ("hoje", "hoje mesmo", "agora", "já vou enviar", "ja vou enviar"):
+        return hoje.isoformat()
+
+    # "depois de amanhã" (check before "amanhã")
+    if "depois de amanhã" in text_lower or "depois de amanha" in text_lower:
+        return (hoje + _dt_followup.timedelta(days=2)).isoformat()
+
+    # "amanhã"
+    if "amanhã" in text_lower or "amanha" in text_lower:
+        return (hoje + _dt_followup.timedelta(days=1)).isoformat()
+
     # "dia 15", "dia 20"
     m = re.search(r'dia\s+(\d{1,2})', text_lower)
     if m:
         dia = int(m.group(1))
         if 1 <= dia <= 31:
-            # If day already passed this month, assume next month
             try:
                 data = hoje.replace(day=dia)
                 if data < hoje:
@@ -3467,14 +3481,6 @@ def _followup_detect_date(text):
                 return data.isoformat()
             except ValueError:
                 pass
-
-    # "amanhã"
-    if "amanhã" in text_lower or "amanha" in text_lower:
-        return (hoje + _dt_followup.timedelta(days=1)).isoformat()
-
-    # "depois de amanhã"
-    if "depois de amanhã" in text_lower or "depois de amanha" in text_lower:
-        return (hoje + _dt_followup.timedelta(days=2)).isoformat()
 
     # "segunda", "terça", etc.
     dias_semana = {
@@ -3491,10 +3497,6 @@ def _followup_detect_date(text):
     # "semana que vem", "próxima semana"
     if "semana que vem" in text_lower or "próxima semana" in text_lower or "proxima semana" in text_lower:
         return (hoje + _dt_followup.timedelta(days=7)).isoformat()
-
-    # "hoje"
-    if text_lower in ("hoje", "hoje mesmo", "agora", "já vou enviar", "ja vou enviar"):
-        return hoje.isoformat()
 
     return None
 
@@ -6243,26 +6245,29 @@ MATERNIDADE_KEY_NIT = os.environ.get("MATERNIDADE_KEY_NIT", "nit")  # Key do cam
 MATERNIDADE_KEY_DATA_PARTO = os.environ.get("MATERNIDADE_KEY_DATA_PARTO", "data-prevista-do-parto")  # Key do campo data parto
 MATERNIDADE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maternidade_queue.json")
 MATERNIDADE_MAX_DIA = int(os.environ.get("MATERNIDADE_MAX_DIA", "5"))  # Máx mensagens por dia
+_maternidade_file_lock = threading.Lock()
 
 
 def _maternidade_load():
-    """Load maternity tracking queue from disk."""
-    try:
-        if os.path.exists(MATERNIDADE_FILE):
-            with open(MATERNIDADE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"[MATERNIDADE] Erro ao carregar: {e}")
-    return {}
+    """Load maternity tracking queue from disk (thread-safe)."""
+    with _maternidade_file_lock:
+        try:
+            if os.path.exists(MATERNIDADE_FILE):
+                with open(MATERNIDADE_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"[MATERNIDADE] Erro ao carregar: {e}")
+        return {}
 
 
 def _maternidade_save(queue):
-    """Save maternity tracking queue to disk."""
-    try:
-        with open(MATERNIDADE_FILE, "w", encoding="utf-8") as f:
-            json.dump(queue, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[MATERNIDADE] Erro ao salvar: {e}")
+    """Save maternity tracking queue to disk (thread-safe)."""
+    with _maternidade_file_lock:
+        try:
+            with open(MATERNIDADE_FILE, "w", encoding="utf-8") as f:
+                json.dump(queue, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[MATERNIDADE] Erro ao salvar: {e}")
 
 
 def _maternidade_generate_engagement(entry, tipo="engajamento"):
@@ -6498,18 +6503,20 @@ def _maternidade_process():
                 except Exception as e:
                     print(f"[MATERNIDADE] Erro ao adicionar tag GPS: {e}")
 
-            # Transfer session to Michelle with context
+            # Create INTERNAL NOTE in the conversation (only team sees it, not the client)
             sid = entry.get("session_id")
             if sid:
                 try:
-                    # Send internal note first
                     competencia = hoje.strftime("%m/%Y")
-                    note_msg = f"GERAR GPS - Salário Maternidade\nCliente: {entry.get('nome')}\nNIT: {nit}\nCódigo: 1473 (Facultativo Simplificado)\nCompetência: {competencia}\nValor: R$178,31 (11% de R$1.621)\nParto previsto: {data_parto}"
-                    whatsapp_send_message(f"+55{phone_clean}" if not phone_clean.startswith("55") else f"+{phone_clean}", note_msg, session_id=sid)
+                    note_text = f"⚠️ GERAR GPS - Salário Maternidade\n\nCliente: {entry.get('nome')}\nNIT: {nit}\nCódigo: 1473 (Facultativo Simplificado)\nCompetência: {competencia}\nValor: R$178,31 (11% de R$1.621)\nParto previsto: {data_parto}\n\nGerar pelo site: meu.inss.gov.br > Emissão de GPS"
+                    conversapp_request("post", f"/chat/v1/session/{sid}/note", json={"text": note_text})
+                    print(f"[MATERNIDADE] Nota interna criada na conversa: {entry.get('nome')}")
+
                     import time as _t_mat
-                    _t_mat.sleep(3)
+                    _t_mat.sleep(2)
+                    # Transfer session to Michelle so she sees the note
                     conversapp_transfer_session(sid, MICHELLE_USER_ID)
-                    print(f"[MATERNIDADE] GPS notificado e transferido pra Michelle: {entry.get('nome')}")
+                    print(f"[MATERNIDADE] Sessão transferida pra Michelle: {entry.get('nome')}")
                 except Exception as e:
                     print(f"[MATERNIDADE] Erro ao notificar GPS: {e}")
 
@@ -6575,8 +6582,6 @@ def _maternidade_process():
                     "mensagem": mensagem[:100]
                 })
                 print(f"[MATERNIDADE] Enviado ({formato}) para {entry.get('nome')}: {mensagem[:80]}")
-                import time as _t_mat2
-                _t_mat2.sleep(_random_fup.randint(30, 60) * 60)  # 30-60 min entre mensagens
             except Exception as e:
                 print(f"[MATERNIDADE] Erro ao enviar: {e}")
 
