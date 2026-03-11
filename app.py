@@ -4961,17 +4961,31 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
             sid_followup = session.get("conversapp_session_id")
 
             if data_detectada and (promessa_envio or todos_docs):
-                # Client promised a specific date
+                # Client promised a specific date - reset attempts (client engaged)
                 contexto_conv = " | ".join(h.get("content", "")[:100] for h in historico[-4:])
                 _followup_add(phone, nome_cliente, todos_docs, data_prometida=data_detectada,
                              session_id=sid_followup, contexto=contexto_conv)
-                print(f"[BOT] Follow-up agendado: {phone} -> data={data_detectada}, docs={todos_docs}")
+                # Reset attempts since client responded
+                queue_temp = _followup_load()
+                pc = re.sub(r'[^\d]', '', str(phone))
+                if pc in queue_temp:
+                    queue_temp[pc]["tentativas"] = 0
+                    queue_temp[pc]["status"] = "pendente"
+                    _followup_save(queue_temp)
+                print(f"[BOT] Follow-up reagendado: {phone} -> data={data_detectada}, docs={todos_docs} (tentativas zeradas)")
             elif promessa_envio and not data_detectada:
-                # Client promised but no specific date - follow up in 3 days
+                # Client promised but no specific date - reset and follow up in 3 days
                 contexto_conv = " | ".join(h.get("content", "")[:100] for h in historico[-4:])
                 _followup_add(phone, nome_cliente, todos_docs, data_prometida=None,
                              session_id=sid_followup, contexto=contexto_conv)
-                print(f"[BOT] Follow-up agendado (sem data): {phone} -> docs={todos_docs}")
+                # Reset attempts since client responded
+                queue_temp = _followup_load()
+                pc = re.sub(r'[^\d]', '', str(phone))
+                if pc in queue_temp:
+                    queue_temp[pc]["tentativas"] = 0
+                    queue_temp[pc]["status"] = "pendente"
+                    _followup_save(queue_temp)
+                print(f"[BOT] Follow-up reagendado (sem data): {phone} -> docs={todos_docs} (tentativas zeradas)")
         except Exception as e:
             print(f"[BOT] Erro ao detectar follow-up: {e}")
 
