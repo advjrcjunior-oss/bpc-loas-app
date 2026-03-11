@@ -4686,7 +4686,59 @@ def whatsapp_webhook():
     # Skip outgoing messages FIRST (FROM_HUB = incoming from client, TO_HUB = outgoing)
     direction = content.get("direction") or inner.get("direction") or ""
     from_me = content.get("fromMe") or inner.get("fromMe")
-    if direction.upper() in ("TO_HUB", "OUTBOUND", "OUT", "SENT") or from_me in (True, "true"):
+    is_outbound = direction.upper() in ("TO_HUB", "OUTBOUND", "OUT", "SENT") or from_me in (True, "true")
+
+    if is_outbound:
+        # Check for agent commands in outgoing messages before skipping
+        out_text = ""
+        if isinstance(content, dict):
+            out_text = (content.get("text") or content.get("body") or "").strip().lower()
+        out_details = (content.get("details") or {}) if isinstance(content, dict) else {}
+        # For outbound messages: details.from = bot number, details.to = client number
+        # We also check sessionId to get the contact phone from session
+        out_phone = ""
+        if isinstance(out_details, dict):
+            # In outbound, "to" is the client (who we're sending to)
+            out_from = out_details.get("from") or ""
+            out_to = out_details.get("to") or ""
+            # The client phone is whichever is NOT our bot number
+            pos_venda = os.environ.get("CONVERSAPP_POS_VENDA_NUMBERS", "+5519982268158,+5516988124636").split(",")
+            if out_to and out_to not in pos_venda:
+                out_phone = out_to
+            elif out_from and out_from not in pos_venda:
+                out_phone = out_from
+            else:
+                out_phone = out_to or out_from
+        if not out_phone:
+            out_phone = content.get("to") or inner.get("to") or ""
+        out_phone_clean = re.sub(r'[^\d]', '', str(out_phone))
+
+        if out_text in ("#parar", "#pausar", "#p") and out_phone_clean:
+            _paused_phones[out_phone_clean] = str(__import__('datetime').datetime.now())
+            print(f"[BOT] Comando #parar detectado - Ana PAUSADA para {out_phone_clean}")
+            # Try to delete the command message so client doesn't see it
+            cmd_msg_id = (content.get("id") or inner.get("id") or "") if isinstance(content, dict) else ""
+            cmd_session_id = content.get("sessionId") or inner.get("sessionId") or ""
+            if cmd_msg_id and cmd_session_id:
+                try:
+                    conversapp_request("delete", f"/chat/v1/message/{cmd_msg_id}")
+                    print(f"[BOT] Mensagem de comando deletada: {cmd_msg_id}")
+                except Exception:
+                    pass
+            return jsonify({"status": "ok", "action": "command_parar", "phone": out_phone_clean})
+
+        elif out_text in ("#retomar", "#voltar", "#r") and out_phone_clean:
+            _paused_phones.pop(out_phone_clean, None)
+            print(f"[BOT] Comando #retomar detectado - Ana RETOMADA para {out_phone_clean}")
+            cmd_msg_id = (content.get("id") or inner.get("id") or "") if isinstance(content, dict) else ""
+            if cmd_msg_id:
+                try:
+                    conversapp_request("delete", f"/chat/v1/message/{cmd_msg_id}")
+                    print(f"[BOT] Mensagem de comando deletada: {cmd_msg_id}")
+                except Exception:
+                    pass
+            return jsonify({"status": "ok", "action": "command_retomar", "phone": out_phone_clean})
+
         return jsonify({"status": "ok", "action": "skipped_outbound"})
 
     # Filter by destination number (pós-venda) since ConversApp doesn't send channelId
