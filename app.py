@@ -3385,6 +3385,233 @@ def conversapp_transfer_session(session_id, user_id=None):
         return False
 
 
+# ========== FOLLOW-UP INTELIGENTE DE DOCUMENTOS ==========
+
+import datetime as _dt_followup
+
+FOLLOWUP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "followup_queue.json")
+
+def _followup_load():
+    """Load follow-up queue from disk."""
+    try:
+        if os.path.exists(FOLLOWUP_FILE):
+            with open(FOLLOWUP_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"[FOLLOWUP] Erro ao carregar fila: {e}")
+    return {}
+
+def _followup_save(queue):
+    """Save follow-up queue to disk."""
+    try:
+        with open(FOLLOWUP_FILE, "w", encoding="utf-8") as f:
+            json.dump(queue, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[FOLLOWUP] Erro ao salvar fila: {e}")
+
+def _followup_add(phone, nome, docs_pendentes, data_prometida=None, session_id=None, contexto=""):
+    """Add or update a follow-up entry for a client."""
+    queue = _followup_load()
+    phone_clean = re.sub(r'[^\d]', '', str(phone))
+    hoje = _dt_followup.date.today().isoformat()
+
+    entry = queue.get(phone_clean, {})
+    entry.update({
+        "nome": nome,
+        "phone": phone_clean,
+        "docs_pendentes": docs_pendentes,
+        "data_prometida": data_prometida,
+        "session_id": session_id,
+        "contexto": contexto[:500],
+        "criado_em": entry.get("criado_em", hoje),
+        "atualizado_em": hoje,
+        "tentativas": entry.get("tentativas", 0),
+        "ultimo_followup": entry.get("ultimo_followup"),
+        "status": "pendente",
+    })
+    queue[phone_clean] = entry
+    _followup_save(queue)
+    print(f"[FOLLOWUP] Adicionado/atualizado: {phone_clean} ({nome}) - docs: {docs_pendentes}, data: {data_prometida}")
+    return entry
+
+def _followup_remove(phone):
+    """Remove a client from follow-up queue."""
+    queue = _followup_load()
+    phone_clean = re.sub(r'[^\d]', '', str(phone))
+    removed = queue.pop(phone_clean, None)
+    if removed:
+        _followup_save(queue)
+        print(f"[FOLLOWUP] Removido: {phone_clean}")
+    return removed
+
+def _followup_detect_date(text):
+    """Detect date promises in conversation text. Returns ISO date string or None."""
+    hoje = _dt_followup.date.today()
+    text_lower = text.lower().strip()
+
+    # "dia 15", "dia 20"
+    m = re.search(r'dia\s+(\d{1,2})', text_lower)
+    if m:
+        dia = int(m.group(1))
+        if 1 <= dia <= 31:
+            # If day already passed this month, assume next month
+            try:
+                data = hoje.replace(day=dia)
+                if data < hoje:
+                    mes = hoje.month + 1
+                    ano = hoje.year
+                    if mes > 12:
+                        mes = 1
+                        ano += 1
+                    data = hoje.replace(year=ano, month=mes, day=dia)
+                return data.isoformat()
+            except ValueError:
+                pass
+
+    # "amanhã"
+    if "amanhã" in text_lower or "amanha" in text_lower:
+        return (hoje + _dt_followup.timedelta(days=1)).isoformat()
+
+    # "depois de amanhã"
+    if "depois de amanhã" in text_lower or "depois de amanha" in text_lower:
+        return (hoje + _dt_followup.timedelta(days=2)).isoformat()
+
+    # "segunda", "terça", etc.
+    dias_semana = {
+        "segunda": 0, "terça": 1, "terca": 1, "quarta": 2,
+        "quinta": 3, "sexta": 4, "sábado": 5, "sabado": 5, "domingo": 6
+    }
+    for nome_dia, num_dia in dias_semana.items():
+        if nome_dia in text_lower:
+            dias_ate = (num_dia - hoje.weekday()) % 7
+            if dias_ate == 0:
+                dias_ate = 7  # Next week
+            return (hoje + _dt_followup.timedelta(days=dias_ate)).isoformat()
+
+    # "semana que vem", "próxima semana"
+    if "semana que vem" in text_lower or "próxima semana" in text_lower or "proxima semana" in text_lower:
+        return (hoje + _dt_followup.timedelta(days=7)).isoformat()
+
+    # "hoje"
+    if text_lower in ("hoje", "hoje mesmo", "agora", "já vou enviar", "ja vou enviar"):
+        return hoje.isoformat()
+
+    return None
+
+def _followup_detect_docs(text):
+    """Detect document mentions in text. Returns list of doc names."""
+    text_lower = text.lower()
+    docs_map = {
+        "laudo": "laudo médico",
+        "laudo médico": "laudo médico",
+        "laudo medico": "laudo médico",
+        "cad único": "CadÚnico",
+        "cad unico": "CadÚnico",
+        "cadúnico": "CadÚnico",
+        "cadunico": "CadÚnico",
+        "cadastro único": "CadÚnico",
+        "comprovante de residência": "comprovante de residência",
+        "comprovante de residencia": "comprovante de residência",
+        "comprovante residência": "comprovante de residência",
+        "comprovante residencia": "comprovante de residência",
+        "comprovante de endereço": "comprovante de residência",
+        "comprovante de endereco": "comprovante de residência",
+        "rg": "RG",
+        "identidade": "RG",
+        "cpf": "CPF",
+        "certidão de nascimento": "certidão de nascimento",
+        "certidao de nascimento": "certidão de nascimento",
+        "receita": "receita médica",
+        "exame": "exame médico",
+        "declaração": "declaração",
+        "declaracao": "declaração",
+        "contrato": "contrato",
+        "procuração": "procuração",
+        "procuracao": "procuração",
+    }
+    found = set()
+    for keyword, doc_name in docs_map.items():
+        if keyword in text_lower:
+            found.add(doc_name)
+    return list(found)
+
+def _followup_read_conversation(session_id):
+    """Read conversation history from ConversApp session."""
+    try:
+        msgs = []
+        resp = conversapp_request("get", f"/chat/v1/session/{session_id}/message?pageSize=50")
+        if resp.status_code == 200:
+            data = resp.json()
+            for msg in data.get("items", []):
+                direction = "cliente" if msg.get("direction") != "TO_HUB" else "ana"
+                text = msg.get("text") or ""
+                msg_type = msg.get("type") or "TEXT"
+                if text:
+                    msgs.append({"de": direction, "texto": text, "tipo": msg_type})
+                elif msg_type in ("IMAGE", "PHOTO"):
+                    msgs.append({"de": direction, "texto": "[imagem enviada]", "tipo": msg_type})
+        return msgs
+    except Exception as e:
+        print(f"[FOLLOWUP] Erro ao ler conversa: {e}")
+        return []
+
+def _followup_generate_message(entry, conversation_msgs):
+    """Use Claude to generate a personalized follow-up message based on conversation context."""
+    try:
+        nome = entry.get("nome", "")
+        docs = entry.get("docs_pendentes", [])
+        tentativas = entry.get("tentativas", 0)
+        data_prometida = entry.get("data_prometida", "")
+        contexto = entry.get("contexto", "")
+
+        # Build conversation summary (last 15 messages)
+        conv_text = ""
+        for msg in conversation_msgs[-15:]:
+            de = "Cliente" if msg["de"] == "cliente" else "Ana"
+            conv_text += f"{de}: {msg['texto'][:200]}\n"
+
+        urgencia = "gentil"
+        if tentativas == 1:
+            urgencia = "lembrete amigável"
+        elif tentativas >= 2:
+            urgencia = "mais direto, mostrando importância"
+
+        client_ai = anthropic.Anthropic()
+        response = client_ai.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            system=f"""Você é Ana, do pós-venda da JRC Advocacia. Precisa enviar uma mensagem de follow-up para um cliente sobre documentos pendentes.
+
+CONTEXTO:
+- Nome do cliente: {nome}
+- Documentos pendentes: {', '.join(docs) if docs else 'documentos gerais'}
+- Data que o cliente prometeu enviar: {data_prometida or 'não especificou'}
+- Número de vezes que já foi cobrado: {tentativas}
+- Tom da mensagem: {urgencia}
+
+HISTÓRICO DA ÚLTIMA CONVERSA:
+{conv_text or contexto or 'Sem histórico disponível'}
+
+REGRAS:
+- Mensagem curta (2-3 linhas máximo)
+- Humanizada, como se fosse uma pessoa real mandando mensagem
+- NÃO use emojis
+- NÃO pareça automático/robótico
+- Se o cliente prometeu uma data, mencione de forma natural
+- Se já cobrou antes, varie o texto (não repita a mesma mensagem)
+- Chame pelo primeiro nome
+- Não pressione demais, seja acolhedora
+
+Escreva APENAS a mensagem, sem explicações.""",
+            messages=[{"role": "user", "content": "Gere a mensagem de follow-up."}],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        print(f"[FOLLOWUP] Erro ao gerar mensagem: {e}")
+        nome_primeiro = (entry.get("nome") or "").split()[0] if entry.get("nome") else ""
+        return f"Oi {nome_primeiro}! Tudo bem? Passando pra lembrar sobre os documentos pendentes do seu processo. Quando puder, manda por aqui que eu já encaminho pro escritório!"
+
+
 def _get_phone_lock(phone):
     """Get or create a threading lock for a specific phone number."""
     with _whatsapp_locks_lock:
@@ -4710,6 +4937,44 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
             session["aguardando_identificacao"] = True
             print(f"[BOT] Auto-detectado: bot pediu nome, setando aguardando_identificacao=True")
 
+        # Auto-detect date promises and pending docs from client message for follow-up
+        try:
+            data_detectada = _followup_detect_date(msg)
+            docs_detectados = _followup_detect_docs(msg)
+            # Also check Ana's response for doc requests
+            docs_ana = _followup_detect_docs(resposta_limpa)
+            todos_docs = list(set(docs_detectados + docs_ana))
+
+            # Keywords that indicate client is promising to send something
+            promessa_envio = any(kw in msg_lower for kw in [
+                "vou enviar", "vou mandar", "mando", "envio", "te mando",
+                "vou pegar", "vou buscar", "vou conseguir", "vou providenciar",
+            ])
+
+            nome_cliente = ""
+            proc = session.get("processo")
+            if proc:
+                nome_cliente = proc.get("poloativo_nome", "")
+            elif session.get("_conversapp_context"):
+                nome_cliente = session["_conversapp_context"].get("nome", "")
+
+            sid_followup = session.get("conversapp_session_id")
+
+            if data_detectada and (promessa_envio or todos_docs):
+                # Client promised a specific date
+                contexto_conv = " | ".join(h.get("content", "")[:100] for h in historico[-4:])
+                _followup_add(phone, nome_cliente, todos_docs, data_prometida=data_detectada,
+                             session_id=sid_followup, contexto=contexto_conv)
+                print(f"[BOT] Follow-up agendado: {phone} -> data={data_detectada}, docs={todos_docs}")
+            elif promessa_envio and not data_detectada:
+                # Client promised but no specific date - follow up in 3 days
+                contexto_conv = " | ".join(h.get("content", "")[:100] for h in historico[-4:])
+                _followup_add(phone, nome_cliente, todos_docs, data_prometida=None,
+                             session_id=sid_followup, contexto=contexto_conv)
+                print(f"[BOT] Follow-up agendado (sem data): {phone} -> docs={todos_docs}")
+        except Exception as e:
+            print(f"[BOT] Erro ao detectar follow-up: {e}")
+
         session["historico"] = historico
         _whatsapp_sessions[phone] = session
         return resposta
@@ -4721,6 +4986,150 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
 
 _webhook_log = []  # Store last 20 webhook payloads for debugging
 _bot_debug_log = []  # Store last 20 bot processing logs
+
+
+# ========== FOLLOW-UP ENDPOINTS ==========
+
+@app.route("/api/followup/fila", methods=["GET"])
+def followup_fila():
+    """View the follow-up queue."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
+    queue = _followup_load()
+    return jsonify({"total": len(queue), "clientes": queue})
+
+
+@app.route("/api/followup/adicionar", methods=["POST"])
+def followup_adicionar():
+    """Manually add a client to the follow-up queue."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json() or {}
+    phone = data.get("phone", "")
+    nome = data.get("nome", "")
+    docs = data.get("docs_pendentes", [])
+    data_prometida = data.get("data_prometida")
+    session_id = data.get("session_id")
+    contexto = data.get("contexto", "")
+    if not phone:
+        return jsonify({"error": "Informe phone"}), 400
+    entry = _followup_add(phone, nome, docs, data_prometida, session_id, contexto)
+    return jsonify({"status": "ok", "entry": entry})
+
+
+@app.route("/api/followup/remover", methods=["POST", "DELETE"])
+def followup_remover():
+    """Remove a client from the follow-up queue."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
+    phone = request.args.get("phone", "") or (request.get_json() or {}).get("phone", "")
+    if not phone:
+        return jsonify({"error": "Informe phone"}), 400
+    removed = _followup_remove(phone)
+    return jsonify({"status": "ok", "removido": bool(removed)})
+
+
+@app.route("/api/followup/executar", methods=["POST", "GET"])
+def followup_executar():
+    """Run the follow-up check - sends messages to clients with due follow-ups."""
+    token = request.args.get("token", "")
+    if token != "jrc2026debug":
+        return jsonify({"error": "unauthorized"}), 401
+
+    queue = _followup_load()
+    hoje = _dt_followup.date.today()
+    resultados = []
+
+    for phone_clean, entry in list(queue.items()):
+        try:
+            status = entry.get("status", "pendente")
+            if status != "pendente":
+                continue
+
+            # Check if it's time to follow up
+            data_prometida = entry.get("data_prometida")
+            ultimo_followup = entry.get("ultimo_followup")
+            tentativas = entry.get("tentativas", 0)
+            criado_em = entry.get("criado_em", hoje.isoformat())
+
+            # Determine if we should send follow-up today
+            enviar = False
+            motivo = ""
+
+            if data_prometida:
+                data_p = _dt_followup.date.fromisoformat(data_prometida)
+                if hoje >= data_p:
+                    enviar = True
+                    motivo = f"data prometida: {data_prometida}"
+            else:
+                # No promised date - follow up based on days since creation/last follow-up
+                ref_date = ultimo_followup or criado_em
+                dias_desde = (hoje - _dt_followup.date.fromisoformat(ref_date)).days
+                if tentativas == 0 and dias_desde >= 3:
+                    enviar = True
+                    motivo = f"3 dias sem resposta"
+                elif tentativas == 1 and dias_desde >= 3:
+                    enviar = True
+                    motivo = f"2º lembrete (+3 dias)"
+                elif tentativas >= 2 and dias_desde >= 4:
+                    enviar = True
+                    motivo = f"3º+ lembrete (+4 dias)"
+
+            # Don't follow up more than once per day
+            if ultimo_followup == hoje.isoformat():
+                enviar = False
+                motivo = "já contatado hoje"
+
+            # Max 5 attempts before escalating
+            if tentativas >= 5:
+                entry["status"] = "escalar"
+                queue[phone_clean] = entry
+                resultados.append({"phone": phone_clean, "nome": entry.get("nome"), "acao": "escalar", "motivo": "5 tentativas sem sucesso"})
+                continue
+
+            if not enviar:
+                resultados.append({"phone": phone_clean, "nome": entry.get("nome"), "acao": "aguardar", "motivo": motivo or "ainda não é hora"})
+                continue
+
+            # Read conversation history for context
+            conv_msgs = []
+            sid = entry.get("session_id")
+            if sid:
+                conv_msgs = _followup_read_conversation(sid)
+
+            # Generate personalized message
+            mensagem = _followup_generate_message(entry, conv_msgs)
+
+            # Send message via pós-venda number
+            phone_formatted = f"+55{phone_clean}" if not phone_clean.startswith("55") else f"+{phone_clean}"
+            try:
+                whatsapp_send_message(phone_formatted, mensagem)
+                entry["tentativas"] = tentativas + 1
+                entry["ultimo_followup"] = hoje.isoformat()
+                # After promised date, clear it so next follow-ups use interval logic
+                if data_prometida:
+                    entry["data_prometida"] = None
+                queue[phone_clean] = entry
+                resultados.append({
+                    "phone": phone_clean,
+                    "nome": entry.get("nome"),
+                    "acao": "mensagem_enviada",
+                    "tentativa": tentativas + 1,
+                    "motivo": motivo,
+                    "mensagem": mensagem[:100]
+                })
+                print(f"[FOLLOWUP] Mensagem enviada para {phone_clean}: {mensagem[:80]}")
+            except Exception as e:
+                resultados.append({"phone": phone_clean, "nome": entry.get("nome"), "acao": "erro", "motivo": str(e)})
+
+        except Exception as e:
+            resultados.append({"phone": phone_clean, "acao": "erro", "motivo": str(e)})
+
+    _followup_save(queue)
+    return jsonify({"status": "ok", "data": hoje.isoformat(), "total_fila": len(queue), "resultados": resultados})
 
 @app.route("/api/whatsapp/pausar", methods=["POST", "GET"])
 def whatsapp_pausar():
@@ -5237,6 +5646,27 @@ Seja curta e direta. Máximo 3 linhas.""",
                     time.sleep(5)  # Small delay to seem natural
                     whatsapp_send_message(phone, resposta, session_id=sid)
                     print(f"[BOT] Imagem analisada para {phone}: {resposta[:100]}")
+
+                    # Check if document was received OK - update follow-up queue
+                    resposta_lower = resposta.lower()
+                    doc_ok = "legível" in resposta_lower or "legivel" in resposta_lower or "encaminhar" in resposta_lower
+                    if doc_ok:
+                        docs_recebidos = _followup_detect_docs(resposta)
+                        if docs_recebidos:
+                            queue = _followup_load()
+                            phone_fup = re.sub(r'[^\d]', '', str(phone))
+                            if phone_fup in queue:
+                                pendentes = queue[phone_fup].get("docs_pendentes", [])
+                                for doc in docs_recebidos:
+                                    if doc in pendentes:
+                                        pendentes.remove(doc)
+                                queue[phone_fup]["docs_pendentes"] = pendentes
+                                if not pendentes:
+                                    queue[phone_fup]["status"] = "completo"
+                                    print(f"[FOLLOWUP] Todos os docs recebidos de {phone_fup}!")
+                                else:
+                                    print(f"[FOLLOWUP] Doc recebido de {phone_fup}, ainda faltam: {pendentes}")
+                                _followup_save(queue)
 
                 except Exception as e:
                     print(f"[WHATSAPP] Erro ao analisar imagem: {e}")
