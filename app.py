@@ -36,9 +36,106 @@ from flask import Flask, render_template, request, jsonify, send_from_directory
 import shutil
 import zipfile
 import anthropic
+import httpx as _httpx
 import fitz  # PyMuPDF
 from PIL import Image
 import openpyxl
+
+
+# ==================== AI FALLBACK SYSTEM ====================
+# Tries: Anthropic (Haiku/Sonnet) → Z.AI GLM → Google Gemini
+# Ensures Ana NEVER stops responding even if Anthropic is down
+
+_GLM_API_KEY = os.environ.get("GLM_API_KEY", "")
+_GEMINI_API_KEY = os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+
+def _call_glm(messages, system=None, max_tokens=1500, model="glm-4-plus"):
+    """Z.AI GLM fallback."""
+    if not _GLM_API_KEY:
+        return None
+    try:
+        msgs = []
+        if system:
+            msgs.append({"role": "system", "content": system})
+        msgs.extend(messages)
+        with _httpx.Client(timeout=30) as client:
+            r = client.post(
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                headers={"Authorization": f"Bearer {_GLM_API_KEY}", "Content-Type": "application/json"},
+                json={"model": model, "messages": msgs, "max_tokens": max_tokens},
+            )
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]["content"]
+    except Exception:
+        pass
+    return None
+
+def _call_gemini(messages, system=None, max_tokens=1500):
+    """Google Gemini fallback."""
+    if not _GEMINI_API_KEY:
+        return None
+    try:
+        # Convert messages to Gemini format
+        parts = []
+        if system:
+            parts.append({"text": f"System: {system}\n\n"})
+        for m in messages:
+            prefix = "User: " if m["role"] == "user" else "Assistant: "
+            parts.append({"text": prefix + m["content"]})
+        with _httpx.Client(timeout=30) as client:
+            r = client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={_GEMINI_API_KEY}",
+                json={"contents": [{"parts": parts}], "generationConfig": {"maxOutputTokens": max_tokens}},
+            )
+            if r.status_code == 200:
+                return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception:
+        pass
+    return None
+
+def ai_chat(messages, system=None, model="claude-haiku-4-5-20251001", max_tokens=1500, api_key=None):
+    """
+    Universal AI call with automatic fallback.
+    Tries: Anthropic → Z.AI GLM → Google Gemini
+    """
+    import logging
+    logger = logging.getLogger("ai_fallback")
+
+    # 1. Try Anthropic (primary)
+    try:
+        kwargs = {"timeout": 30.0}
+        if api_key:
+            kwargs["api_key"] = api_key
+        client = anthropic.Anthropic(**kwargs)
+        params = {"model": model, "max_tokens": max_tokens, "messages": messages}
+        if system:
+            params["system"] = system
+        response = client.messages.create(**params)
+        return response.content[0].text
+    except Exception as e:
+        err = str(e)
+        logger.warning(f"[AI] Anthropic failed ({model}): {err[:100]}")
+
+    # 2. Try Z.AI GLM
+    try:
+        result = _call_glm(messages, system=system, max_tokens=max_tokens)
+        if result:
+            logger.info("[AI] Fallback to GLM succeeded")
+            return result
+    except Exception as e:
+        logger.warning(f"[AI] GLM failed: {e}")
+
+    # 3. Try Google Gemini
+    try:
+        result = _call_gemini(messages, system=system, max_tokens=max_tokens)
+        if result:
+            logger.info("[AI] Fallback to Gemini succeeded")
+            return result
+    except Exception as e:
+        logger.warning(f"[AI] Gemini failed: {e}")
+
+    logger.error("[AI] ALL PROVIDERS FAILED")
+    return None
 
 # Import all helper functions
 import helpers
@@ -4296,10 +4393,8 @@ def _followup_generate_message(entry, conversation_msgs):
         elif tentativas >= 2:
             urgencia = "mais direto, mostrando importância"
 
-        client_ai = anthropic.Anthropic(timeout=30.0)
-        response = client_ai.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=300,
+        result = ai_chat(
+            messages=[{"role": "user", "content": "Gere a mensagem de follow-up."}],
             system=f"""Você é Ana, do pós-venda da JRC Advocacia. Precisa enviar uma mensagem de follow-up para um cliente sobre documentos pendentes.
 
 CONTEXTO:
@@ -4323,9 +4418,9 @@ REGRAS:
 - Não pressione demais, seja acolhedora
 
 Escreva APENAS a mensagem, sem explicações.""",
-            messages=[{"role": "user", "content": "Gere a mensagem de follow-up."}],
+            max_tokens=300,
         )
-        return response.content[0].text.strip()
+        return (result or "").strip()
     except Exception as e:
         print(f"[FOLLOWUP] Erro ao gerar mensagem: {e}")
         nome_primeiro = (entry.get("nome") or "").split()[0] if entry.get("nome") else ""
@@ -5214,12 +5309,10 @@ def _build_resultado_msg(session, processo_info):
     if not dados_raw:
         return "Não consegui localizar as informações no momento. Vou encaminhar para a equipe do escritório verificar. Eles vão entrar em contato com você."
 
-    # Try Claude for a natural, warm explanation
+    # Try AI with fallback (Anthropic → GLM → Gemini)
     try:
-        client_ai = anthropic.Anthropic(timeout=30.0)
-        response = client_ai.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=500,
+        resposta = ai_chat(
+            messages=[{"role": "user", "content": f"Formate estes dados para o cliente:\n\n{dados_raw}"}],
             system="""Você é Ana, do pós-venda da JRC Advocacia. Formate uma mensagem de WhatsApp com os dados abaixo.
 
 REGRAS:
@@ -5231,9 +5324,9 @@ REGRAS:
 - Termine com "Ficou alguma dúvida ou posso te ajudar com mais alguma coisa?"
 - NÃO invente informações que não estão nos dados
 - Máximo 10 linhas""",
-            messages=[{"role": "user", "content": f"Formate estes dados para o cliente:\n\n{dados_raw}"}],
+            max_tokens=500,
         )
-        resposta = response.content[0].text.strip()
+        resposta = (resposta or "").strip()
         if resposta and len(resposta) > 20:
             # Strip unwanted greetings that Claude may add despite instructions
             # Only match optional capitalized name (not any word like "Encontrei")
@@ -5641,14 +5734,14 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
         messages.append({"role": h["role"], "content": h["content"]})
 
     try:
-        client_ai = anthropic.Anthropic(timeout=30.0)
-        response = client_ai.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=800,
-            system=system_msg,
+        resposta = ai_chat(
             messages=messages,
+            system=system_msg,
+            max_tokens=800,
         )
-        resposta = response.content[0].text.strip()
+        if not resposta:
+            resposta = "Desculpe, estou com uma instabilidade momentânea. Vou encaminhar para a equipe. Um momento!"
+        resposta = resposta.strip()
 
         # Save assistant response in history (clean markers)
         resposta_limpa = resposta.replace("[ENCERRAR_SESSAO]", "").replace("[TRANSFERIR_MICHELLE]", "").strip()
@@ -6522,12 +6615,13 @@ def whatsapp_webhook():
 
                     img_b64 = base64.b64encode(img_resp.content).decode("utf-8")
 
-                    # Analyze with Claude Vision
-                    client_ai = anthropic.Anthropic(timeout=30.0)
-                    response = client_ai.messages.create(
-                        model="claude-haiku-4-5-20251001",
-                        max_tokens=400,
-                        system="""Você é Ana, do pós-venda da JRC Advocacia. Um cliente enviou uma imagem/documento.
+                    # Analyze with Claude Vision (fallback: generic ack)
+                    try:
+                        client_ai = anthropic.Anthropic(timeout=30.0)
+                    except Exception:
+                        client_ai = None
+
+                    _img_system = """Você é Ana, do pós-venda da JRC Advocacia. Um cliente enviou uma imagem/documento.
 
 Analise a imagem e responda de forma curta e direta:
 
@@ -6552,16 +6646,30 @@ Exemplos de instrução:
 SE NÃO É UM DOCUMENTO (foto pessoal, meme, etc.):
 "Recebi sua imagem! Se precisar enviar algum documento, pode mandar por aqui que eu encaminho pro escritório."
 
-Seja curta e direta. Máximo 3 linhas.""",
-                        messages=[{
-                            "role": "user",
-                            "content": [
-                                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": img_b64}},
-                                {"type": "text", "text": "Analise esta imagem enviada pelo cliente."}
-                            ]
-                        }],
-                    )
-                    resposta = response.content[0].text.strip()
+Seja curta e direta. Máximo 3 linhas."""
+
+                    resposta = None
+                    if client_ai:
+                        try:
+                            response = client_ai.messages.create(
+                                model="claude-haiku-4-5-20251001",
+                                max_tokens=400,
+                                system=_img_system,
+                                messages=[{
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": img_b64}},
+                                        {"type": "text", "text": "Analise esta imagem enviada pelo cliente."}
+                                    ]
+                                }],
+                            )
+                            resposta = response.content[0].text.strip()
+                        except Exception as _img_err:
+                            print(f"[BOT] Claude Vision falhou: {_img_err}")
+
+                    if not resposta:
+                        # Fallback: generic ack (can't do vision without Anthropic)
+                        resposta = "Recebi seu documento! Vou encaminhar para o escritório analisar. Se precisar enviar mais alguma coisa, pode mandar por aqui."
 
                     time.sleep(5)  # Small delay to seem natural
                     whatsapp_send_message(phone, resposta, session_id=sid)
