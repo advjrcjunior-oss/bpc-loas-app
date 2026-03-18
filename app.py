@@ -226,7 +226,7 @@ def build_exec_globals():
 def gerar():
     try:
         data = request.get_json()
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(timeout=30.0)
         skill_prompt = load_skill_prompt()
 
         # Clean output directory
@@ -592,7 +592,7 @@ def analisar_pasta_internal(pasta):
 
     content_parts.append({"type": "text", "text": EXTRACTION_PROMPT})
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(timeout=30.0)
     response_text = ""
     with client.messages.stream(
         model="claude-haiku-4-5-20251001",
@@ -611,7 +611,7 @@ def analisar_pasta_internal(pasta):
 
 def gerar_documentos_internal(data):
     """Internal: generate all 4 documents from extracted data. Returns list of filenames."""
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(timeout=30.0)
     skill_prompt = load_skill_prompt()
 
     # Clean output
@@ -859,7 +859,7 @@ def analisar_pasta():
         })
 
         # === PASS 3: Call Claude API with streaming ===
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(timeout=30.0)
         response_text = ""
         with client.messages.stream(
             model="claude-haiku-4-5-20251001",
@@ -2565,7 +2565,7 @@ def monitor_fetch_movement_text(idmovimentacoes):
 def monitor_analyze_movement(numero_processo, tribunal, titulo, texto):
     """Use Claude to analyze a movement/intimation."""
     try:
-        client_ai = anthropic.Anthropic()
+        client_ai = anthropic.Anthropic(timeout=30.0)
         prompt = f"""Você é um assistente jurídico. Analise esta movimentação processual:
 
 Processo: {numero_processo} | Tribunal: {tribunal}
@@ -3186,7 +3186,7 @@ def legalmail_analisar_intimacao():
         return jsonify({"error": "Nenhum texto para analisar"}), 400
 
     # Use Claude to analyze
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(timeout=30.0)
     analysis_prompt = f"""Você é um assistente jurídico experiente.
 
 Analise a movimentação processual abaixo com atenção a:
@@ -3302,7 +3302,7 @@ def legalmail_criar_peticao_intermediaria():
     # Step 2: If text provided, generate PDF with Claude
     if texto_peticao and not pdf_path:
         try:
-            client_ai = anthropic.Anthropic()
+            client_ai = anthropic.Anthropic(timeout=30.0)
             gen_resp = client_ai.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=4000,
@@ -3448,7 +3448,7 @@ def legalmail_analisar_todos_pendentes():
 
         # Analyze with Claude
         try:
-            client_ai = anthropic.Anthropic()
+            client_ai = anthropic.Anthropic(timeout=30.0)
             analysis_prompt = f"""Analise esta intimação processual e responda APENAS com JSON:
 
 Processo: {notif.get('numero_processo', '')}
@@ -3529,7 +3529,7 @@ def legalmail_analisar_consolidado():
     if not groups:
         return jsonify({"status": "ok", "message": "Nenhum processo para analisar", "results": []})
 
-    client_ai = anthropic.Anthropic()
+    client_ai = anthropic.Anthropic(timeout=30.0)
     results = []
 
     for numero, group in groups.items():
@@ -3765,7 +3765,7 @@ def legalmail_regenerar_peticao():
 
     tipo_peticao = analysis_anterior.get("tipo_peticao_sugerida", "manifestação") if analysis_anterior else "manifestação"
 
-    client_ai = anthropic.Anthropic()
+    client_ai = anthropic.Anthropic(timeout=30.0)
     prompt = f"""Você é um especialista PhD em Direito Processual do escritório do Dr. José Roberto da Costa Junior (OAB/SP 378.163).
 
 Gere uma peça processual do tipo "{tipo_peticao}" para o processo abaixo. O texto deve ser COMPLETO, formal, técnico e pronto para protocolar.
@@ -4027,13 +4027,60 @@ BOT_HORA_FIM = 21     # 21h (temporário para teste)
 
 # Conversation state per phone number
 # Persisted in DB if available, otherwise in-memory
-_whatsapp_sessions = {}
+_SESSIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "whatsapp_sessions.json")
+_PAUSED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "paused_phones.json")
+_sessions_file_lock = threading.Lock()
+_paused_file_lock = threading.Lock()
+
+def _save_sessions():
+    """Persist sessions to disk."""
+    try:
+        serializable = {}
+        for phone, sess in _whatsapp_sessions.items():
+            s = dict(sess)
+            # Remove non-serializable items
+            for key in list(s.keys()):
+                if callable(s[key]) or key.startswith('_lock'):
+                    del s[key]
+            serializable[phone] = s
+        _safe_json_save(_SESSIONS_FILE, serializable, lock=_sessions_file_lock)
+    except Exception:
+        pass
+
+def _load_sessions():
+    """Load sessions from disk."""
+    try:
+        data = _safe_json_load(_SESSIONS_FILE, lock=_sessions_file_lock)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+def _save_paused():
+    """Persist paused phones to disk."""
+    try:
+        _safe_json_save(_PAUSED_FILE, dict(_paused_phones), lock=_paused_file_lock)
+    except Exception:
+        pass
+
+def _load_paused():
+    """Load paused phones from disk."""
+    try:
+        data = _safe_json_load(_PAUSED_FILE, lock=_paused_file_lock)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+_whatsapp_sessions = _load_sessions()
 _whatsapp_locks = {}  # Per-phone threading locks to prevent race conditions
 _whatsapp_locks_lock = threading.Lock()  # Lock for accessing _whatsapp_locks
 _processed_msg_ids = set()  # Track processed message IDs for deduplication
 _processed_msg_ids_lock = threading.Lock()  # Lock for thread-safe dedup
 _session_last_activity = {}  # Track last activity per phone for cleanup
-_paused_phones = {}  # Phones where Ana is paused (human takeover) - {phone: timestamp}
+_paused_phones = _load_paused()  # Phones where Ana is paused (human takeover) - {phone: timestamp}
 MICHELLE_USER_ID = "95f8cfa9-89e1-4ef6-af46-511651ba492f"
 
 
@@ -4249,7 +4296,7 @@ def _followup_generate_message(entry, conversation_msgs):
         elif tentativas >= 2:
             urgencia = "mais direto, mostrando importância"
 
-        client_ai = anthropic.Anthropic()
+        client_ai = anthropic.Anthropic(timeout=30.0)
         response = client_ai.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=300,
@@ -4307,6 +4354,7 @@ def _cleanup_old_sessions():
         with _whatsapp_locks_lock:
             _whatsapp_locks.pop(phone, None)
     if phones_to_remove:
+        _save_sessions()
         print(f"[BOT] Limpou {len(phones_to_remove)} sessões inativas")
     # Also trim dedup set if too large
     with _processed_msg_ids_lock:
@@ -5168,7 +5216,7 @@ def _build_resultado_msg(session, processo_info):
 
     # Try Claude for a natural, warm explanation
     try:
-        client_ai = anthropic.Anthropic()
+        client_ai = anthropic.Anthropic(timeout=30.0)
         response = client_ai.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=500,
@@ -5241,6 +5289,7 @@ def whatsapp_processar_mensagem(phone, message):
             return None  # Don't spam the same message
         session["fora_horario_enviado"] = True
         _whatsapp_sessions[phone] = session
+        _save_sessions()
         return BOT_MSG_FORA_HORARIO
 
     # Get or create session
@@ -5569,6 +5618,7 @@ PROCESSO DO CLIENTE (já identificado):
         historico.append({"role": "assistant", "content": msg_resultado})
         session["historico"] = historico
         _whatsapp_sessions[phone] = session
+        _save_sessions()
 
         # Auto-fill ConversApp contact fields in background
         threading.Thread(target=_conversapp_auto_fill, args=(phone, session), daemon=True).start()
@@ -5591,7 +5641,7 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
         messages.append({"role": h["role"], "content": h["content"]})
 
     try:
-        client_ai = anthropic.Anthropic()
+        client_ai = anthropic.Anthropic(timeout=30.0)
         response = client_ai.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=800,
@@ -5664,6 +5714,7 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
 
         session["historico"] = historico
         _whatsapp_sessions[phone] = session
+        _save_sessions()
         return resposta
     except Exception as e:
         print(f"[WHATSAPP] Erro IA: {e}")
@@ -5986,6 +6037,7 @@ def whatsapp_pausar():
     phone_clean = re.sub(r'[^\d]', '', str(phone))
     from datetime import datetime as _dt_pause
     _paused_phones[phone_clean] = str(_dt_pause.now())
+    _save_paused()
     print(f"[BOT] Ana PAUSADA para {phone_clean}")
     return jsonify({"status": "pausado", "phone": phone_clean, "message": f"Ana não responde mais para {phone_clean}. Use /retomar para voltar."})
 
@@ -6001,6 +6053,7 @@ def whatsapp_retomar():
     phone_clean = re.sub(r'[^\d]', '', str(phone))
     removed = _paused_phones.pop(phone_clean, None)
     if removed:
+        _save_paused()
         print(f"[BOT] Ana RETOMADA para {phone_clean}")
         return jsonify({"status": "retomado", "phone": phone_clean, "message": f"Ana voltou a responder para {phone_clean}."})
     return jsonify({"status": "ok", "phone": phone_clean, "message": f"Ana já estava ativa para {phone_clean}."})
@@ -6119,6 +6172,7 @@ def whatsapp_webhook():
 
         if out_text in ("#parar", "#pausar", "#p") and out_phone_clean:
             _paused_phones[out_phone_clean] = str(__import__('datetime').datetime.now())
+            _save_paused()
             print(f"[BOT] Comando #parar detectado - Ana PAUSADA para {out_phone_clean}")
             # Try to delete the command message so client doesn't see it
             cmd_msg_id = (content.get("id") or inner.get("id") or "") if isinstance(content, dict) else ""
@@ -6133,6 +6187,7 @@ def whatsapp_webhook():
 
         elif out_text in ("#retomar", "#voltar", "#r") and out_phone_clean:
             _paused_phones.pop(out_phone_clean, None)
+            _save_paused()
             print(f"[BOT] Comando #retomar detectado - Ana RETOMADA para {out_phone_clean}")
             cmd_msg_id = (content.get("id") or inner.get("id") or "") if isinstance(content, dict) else ""
             if cmd_msg_id:
@@ -6216,9 +6271,8 @@ def whatsapp_webhook():
             # Limit dedup set size to prevent memory growth
             if len(_processed_msg_ids) > 5000:
                 # Remove oldest half (set is unordered, but this prevents unbounded growth)
-                with _processed_msg_ids_lock:
-                    excess = list(_processed_msg_ids)[:2500]
-                    _processed_msg_ids.difference_update(excess)
+                excess = list(_processed_msg_ids)[:2500]
+                _processed_msg_ids.difference_update(excess)
 
     # Periodic cleanup of old sessions
     from datetime import datetime as _dt_cleanup
@@ -6270,7 +6324,7 @@ def whatsapp_webhook():
                     if consulta_msg:
                         # Send "vou consultar" with normal 30s delay first
                         elapsed = (_dtproc.datetime.now() - _dtproc.datetime.fromisoformat(log_entry["ts"])).total_seconds()
-                        delay = max(0, 30 - elapsed)
+                        delay = max(0, 12 - elapsed)
                         if delay > 0:
                             for _ in range(int(delay // 5)):
                                 if sid:
@@ -6305,6 +6359,10 @@ def whatsapp_webhook():
                         else:
                             whatsapp_send_message(phone, results_msg, session_id=sid)
                         log_entry["enviado"] = True
+                        # Reset audio flag after two-message response
+                        sess = _whatsapp_sessions.get(phone, {})
+                        sess.pop("_responder_audio", None)
+                        _whatsapp_sessions[phone] = sess
 
                     log_entry["session_id"] = sid
 
@@ -6323,7 +6381,7 @@ def whatsapp_webhook():
                     log_entry["resposta"] = resposta[:200] if isinstance(resposta, str) else str(resposta)[:200]
                     # Single message - normal 30s delay
                     elapsed = (_dtproc.datetime.now() - _dtproc.datetime.fromisoformat(log_entry["ts"])).total_seconds()
-                    delay = max(0, 30 - elapsed)
+                    delay = max(0, 12 - elapsed)
                     if delay > 0:
                         for _ in range(int(delay // 5)):
                             if sid:
@@ -6362,6 +6420,7 @@ def whatsapp_webhook():
                         log_entry["acao"] = "transferir_michelle"
                         # Clear local session
                         _whatsapp_sessions.pop(phone, None)
+                        _save_sessions()
                         print(f"[BOT] Sessão transferida para Michelle: {phone}")
                     elif sid and acao_encerrar:
                         _time.sleep(2)  # Small delay before closing
@@ -6369,6 +6428,7 @@ def whatsapp_webhook():
                         log_entry["acao"] = "encerrar_sessao"
                         # Clear local session
                         _whatsapp_sessions.pop(phone, None)
+                        _save_sessions()
                         print(f"[BOT] Sessão encerrada: {phone}")
             except Exception as e:
                 log_entry["erro"] = str(e)
@@ -6463,7 +6523,7 @@ def whatsapp_webhook():
                     img_b64 = base64.b64encode(img_resp.content).decode("utf-8")
 
                     # Analyze with Claude Vision
-                    client_ai = anthropic.Anthropic()
+                    client_ai = anthropic.Anthropic(timeout=30.0)
                     response = client_ai.messages.create(
                         model="claude-haiku-4-5-20251001",
                         max_tokens=400,
@@ -6960,7 +7020,7 @@ def _maternidade_generate_engagement(entry, tipo="engajamento"):
                         meses_rest = f"faltam {dias} dias"
                 except Exception:
                     pass
-            client_ai = anthropic.Anthropic()
+            client_ai = anthropic.Anthropic(timeout=30.0)
             response = client_ai.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=200,
@@ -6995,7 +7055,7 @@ Escreva APENAS a mensagem.""",
             return f"Oi {primeiro_nome}! Como está o bebê? Quando puder, me envia a certidão de nascimento pra gente dar entrada no seu salário maternidade!"
 
         # Engagement during pregnancy
-        client_ai = anthropic.Anthropic()
+        client_ai = anthropic.Anthropic(timeout=30.0)
 
         meses_restantes = ""
         if data_parto:
