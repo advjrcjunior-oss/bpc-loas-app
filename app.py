@@ -573,6 +573,42 @@ def lote():
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 
+# ==================== MISTRAL OCR ====================
+_MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
+_mistral_client = None
+
+def _get_mistral():
+    global _mistral_client
+    if _mistral_client is None and _MISTRAL_API_KEY:
+        from mistralai.client import Mistral
+        _mistral_client = Mistral(api_key=_MISTRAL_API_KEY)
+    return _mistral_client
+
+def mistral_ocr(file_path):
+    """Extract text from scanned PDF/image via Mistral OCR SDK.
+    Returns markdown text or empty string on failure."""
+    client = _get_mistral()
+    if not client:
+        return ""
+    try:
+        filename = os.path.basename(file_path)
+        with open(file_path, "rb") as f:
+            uploaded = client.files.upload(file={"file_name": filename, "content": f.read()}, purpose="ocr")
+
+        result = client.ocr.process(
+            model="mistral-ocr-latest",
+            document={"type": "file", "file_id": uploaded.id}
+        )
+
+        text = "\n\n".join(p.markdown for p in result.pages if p.markdown)
+        if len(text.strip()) > 20:
+            print(f"  [OCR OK] {filename} → {len(text)} chars")
+            return text.strip()
+    except Exception as e:
+        print(f"  [OCR FAIL] {os.path.basename(file_path)}: {e}")
+    return ""
+
+
 def analisar_pasta_internal(pasta):
     """Internal: analyze a folder and return extracted data dict.
 
@@ -631,7 +667,7 @@ def analisar_pasta_internal(pasta):
 
     content_parts = [{"type": "text", "text": text_content}]
 
-    # Scanned docs as images - with size tracking
+    # Scanned docs: try Mistral OCR first, fallback to image
     def scan_priority(f):
         name = f["name"].lower()
         for i, kw in enumerate(["laudo", "certid", "nascimento", "rg", "cpf", "identif", "sus", "autodecl", "cadunico", "relatorio", "parecer", "receita", "encaminhamento", "grupo_familiar", "comprometimento"]):
@@ -639,21 +675,32 @@ def analisar_pasta_internal(pasta):
                 return i
         return 99
 
-    # Skip non-essential docs as images (we already got their text if available)
-    SKIP_IMAGE_KEYWORDS = ["contrato", "procura", "oab", "pedido.gratuidade", "fatura", "biometria", "conta.luz"]
-
     scan_files.sort(key=scan_priority)
+    ocr_count = 0
     total_images = 0
     total_b64_bytes = 0
     MAX_IMAGES = 15
-    MAX_B64_BYTES = 9 * 1024 * 1024  # 9MB safe limit
-    DPI_SCAN = 120  # lower DPI for large folders
+    MAX_B64_BYTES = 9 * 1024 * 1024
 
     for f in scan_files:
-        if total_images >= MAX_IMAGES or total_b64_bytes >= MAX_B64_BYTES:
-            break
+        # Try Mistral OCR first (converts scan to text - cheaper and no limits)
+        ocr_text = mistral_ocr(f["path"])
+        if ocr_text:
+            ocr_count += 1
+            file_text = ocr_text
+            if len(file_text) > MAX_TEXT_PER_FILE:
+                file_text = file_text[:MAX_TEXT_PER_FILE] + f"\n[... truncado, total {len(ocr_text)} chars ...]"
+            text_content += f"=== {f['name']} (OCR) ===\n{file_text}\n\n"
+            # Update content_parts[0] with new text_content
+            content_parts[0] = {"type": "text", "text": text_content}
+            continue
 
-        # Skip non-essential docs as images
+        # OCR failed - fallback to image (old behavior)
+        if total_images >= MAX_IMAGES or total_b64_bytes >= MAX_B64_BYTES:
+            print(f"  [SKIP] {f['name']} (limite imagens atingido)")
+            continue
+
+        SKIP_IMAGE_KEYWORDS = ["contrato", "procura", "oab", "pedido.gratuidade", "fatura", "biometria", "conta.luz"]
         name_lower = f["name"].lower()
         if any(kw in name_lower for kw in SKIP_IMAGE_KEYWORDS):
             print(f"  [SKIP IMG] {f['name']} (nao essencial)")
@@ -663,7 +710,7 @@ def analisar_pasta_internal(pasta):
         if f["type"] == "pdf":
             try:
                 max_pg = min(2, MAX_IMAGES - total_images)
-                images = pdf_to_images(f["path"], max_pages=max_pg, dpi=DPI_SCAN)
+                images = pdf_to_images(f["path"], max_pages=max_pg, dpi=120)
                 for img_b64 in images:
                     b64_size = len(img_b64)
                     if total_b64_bytes + b64_size > MAX_B64_BYTES:
@@ -685,7 +732,7 @@ def analisar_pasta_internal(pasta):
             except Exception:
                 pass
 
-    print(f"[ANALISE] Enviando: {len(text_files)} docs com texto + {total_images} imagens ({total_b64_bytes / 1024 / 1024:.1f}MB)")
+    print(f"[ANALISE] Enviando: {len(text_files)} docs texto + {ocr_count} OCR + {total_images} imagens ({total_b64_bytes / 1024 / 1024:.1f}MB)")
 
     content_parts.append({"type": "text", "text": EXTRACTION_PROMPT})
 
@@ -906,13 +953,22 @@ def analisar_pasta():
             return 5
 
         scan_files.sort(key=scan_priority)
+        ocr_count = 0
 
         for f in scan_files:
+            # Try Mistral OCR first (converts scan to text)
+            ocr_text = mistral_ocr(f["path"])
+            if ocr_text:
+                ocr_count += 1
+                text_content += f"=== {f['name']} (OCR) ===\n{ocr_text}\n\n"
+                content_parts[0] = {"type": "text", "text": text_content}
+                continue
+
+            # OCR failed - fallback to image
             if total_images >= MAX_IMAGES:
                 content_parts.append({
                     "type": "text",
-                    "text": f"\n[AVISO: {f['name']} nao incluido como imagem - limite atingido. "
-                            f"Se houver texto extraido, ja foi incluido acima.]"
+                    "text": f"\n[AVISO: {f['name']} nao incluido - limite atingido.]"
                 })
                 continue
 
@@ -922,7 +978,6 @@ def analisar_pasta():
             })
 
             if f["type"] == "pdf":
-                # Scanned PDF: convert pages to images
                 max_pg = min(3, MAX_IMAGES - total_images)
                 try:
                     images = pdf_to_images(f["path"], max_pages=max_pg, dpi=DPI_SCAN)
@@ -935,7 +990,6 @@ def analisar_pasta():
                 except Exception as e:
                     print(f"[WARN] Erro ao converter {f['name']} para imagem: {e}")
             else:
-                # Direct image file
                 try:
                     img_b64, media_type = image_to_base64(f["path"])
                     if img_b64:
@@ -947,7 +1001,7 @@ def analisar_pasta():
                 except Exception as e:
                     print(f"[WARN] Erro ao processar imagem {f['name']}: {e}")
 
-        print(f"[ANALISE] Enviando: {len(text_files)} docs com texto + {total_images} imagens")
+        print(f"[ANALISE] Enviando: {len(text_files)} docs texto + {ocr_count} OCR + {total_images} imagens")
 
         # Add extraction prompt
         content_parts.append({
