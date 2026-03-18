@@ -1696,6 +1696,83 @@ BPC_DEFAULTS = {
 # Legacy constant kept for reference
 LEGALMAIL_ASSUNTO_BPC_PJE = "DIREITO ADMINISTRATIVO E OUTRAS MATÉRIAS DE DIREITO PÚBLICO (9985) | Garantias Constitucionais (9986) | Assistência Social (11847)"
 
+# ==================== UF → TRIBUNAL MAPPING ====================
+# Maps Brazilian state to correct TRF, sistema, and default comarca
+UF_TRIBUNAL_MAP = {
+    # TRF-1 (DF, GO, MG, BA, PI, MA, PA, AM, AC, AP, RR, RO, TO, MT)
+    'DF': {'trf': 'TRF-1', 'sistema': 'pje_jfdf', 'uf_tribunal': 'DF'},
+    'GO': {'trf': 'TRF-1', 'sistema': 'pje_jfgo', 'uf_tribunal': 'GO'},
+    'MG': {'trf': 'TRF-1', 'sistema': 'pje_jfmg', 'uf_tribunal': 'MG'},
+    'BA': {'trf': 'TRF-1', 'sistema': 'pje_jfba', 'uf_tribunal': 'BA'},
+    'PI': {'trf': 'TRF-1', 'sistema': 'pje_jfpi', 'uf_tribunal': 'PI'},
+    'MA': {'trf': 'TRF-1', 'sistema': 'pje_jfma', 'uf_tribunal': 'MA'},
+    'PA': {'trf': 'TRF-1', 'sistema': 'pje_jfpa', 'uf_tribunal': 'PA'},
+    'AM': {'trf': 'TRF-1', 'sistema': 'pje_jfam', 'uf_tribunal': 'AM'},
+    'AC': {'trf': 'TRF-1', 'sistema': 'pje_jfac', 'uf_tribunal': 'AC'},
+    'AP': {'trf': 'TRF-1', 'sistema': 'pje_jfap', 'uf_tribunal': 'AP'},
+    'RR': {'trf': 'TRF-1', 'sistema': 'pje_jfrr', 'uf_tribunal': 'RR'},
+    'RO': {'trf': 'TRF-1', 'sistema': 'pje_jfro', 'uf_tribunal': 'RO'},
+    'TO': {'trf': 'TRF-1', 'sistema': 'pje_jfto', 'uf_tribunal': 'TO'},
+    'MT': {'trf': 'TRF-1', 'sistema': 'pje_jfmt', 'uf_tribunal': 'MT'},
+    # TRF-2 (RJ, ES) - eProc
+    'RJ': {'trf': 'TRF-2', 'sistema': 'eproc_jfrj', 'uf_tribunal': 'RJ'},
+    'ES': {'trf': 'TRF-2', 'sistema': 'eproc_jfes', 'uf_tribunal': 'ES'},
+    # TRF-3 (SP, MS) - PJe
+    'SP': {'trf': 'TRF-3', 'sistema': 'pje', 'uf_tribunal': 'SP'},
+    'MS': {'trf': 'TRF-3', 'sistema': 'pje', 'uf_tribunal': 'MS'},
+    # TRF-4 (PR, SC, RS) - eProc
+    'PR': {'trf': 'TRF-4', 'sistema': 'eproc_jfpr', 'uf_tribunal': 'PR'},
+    'SC': {'trf': 'TRF-4', 'sistema': 'eproc_jfsc', 'uf_tribunal': 'SC'},
+    'RS': {'trf': 'TRF-4', 'sistema': 'eproc_jfrs', 'uf_tribunal': 'RS'},
+    # TRF-5 (PE, CE, AL, SE, RN, PB)
+    'PE': {'trf': 'TRF-5', 'sistema': 'pje_jfpe', 'uf_tribunal': 'PE'},
+    'CE': {'trf': 'TRF-5', 'sistema': 'pje_jfce', 'uf_tribunal': 'CE'},
+    'AL': {'trf': 'TRF-5', 'sistema': 'pje_jfal', 'uf_tribunal': 'AL'},
+    'SE': {'trf': 'TRF-5', 'sistema': 'pje_jfse', 'uf_tribunal': 'SE'},
+    'RN': {'trf': 'TRF-5', 'sistema': 'pje_jfrn', 'uf_tribunal': 'RN'},
+    'PB': {'trf': 'TRF-5', 'sistema': 'pje_jfpb', 'uf_tribunal': 'PB'},
+    # TRF-6 (MG only after 2022 split from TRF-1)
+    # Note: MG moved to TRF-6 but LegalMail may still use TRF-1 sistema
+}
+
+def detect_uf_from_folder(pasta):
+    """Detect client's UF from documents in organized folder.
+    Reads comprovante de residencia or CadUnico via OCR."""
+    import re as _re
+    files = sorted(os.listdir(pasta))
+
+    # Priority: comprovante de residencia, then cadunico, then autodeclaracao
+    for f in files:
+        fl = f.lower()
+        if '7- comprovante de residencia' in fl or '8- cadunico' in fl:
+            text = mistral_ocr(os.path.join(pasta, f))
+            if not text:
+                continue
+            # Search for UF patterns
+            ufs = ['SP', 'RJ', 'MG', 'PR', 'SC', 'RS', 'GO', 'MT', 'MS', 'BA', 'PE',
+                   'CE', 'PA', 'AM', 'MA', 'PI', 'RN', 'PB', 'SE', 'AL', 'TO', 'RO',
+                   'AC', 'AP', 'RR', 'ES', 'DF']
+            # Pattern: city/UF, city-UF, city - UF, CEP XXXXX-XXX CITY UF
+            for uf in ufs:
+                if _re.search(rf'(?:[-/]\s*{uf}\b|\b{uf}\s*[-/]|\b{uf}\s+\d{{5}}|\d{{5}}-?\d{{3}}\s+\w+\s+{uf}\b|\b{uf}\s*CEP)', text):
+                    return uf
+            # Try state names
+            state_map = {'SÃO PAULO': 'SP', 'SAO PAULO': 'SP', 'MINAS GERAIS': 'MG',
+                         'PARANÁ': 'PR', 'PARANA': 'PR', 'SANTA CATARINA': 'SC',
+                         'RIO GRANDE DO SUL': 'RS', 'GOIÁS': 'GO', 'GOIAS': 'GO',
+                         'MATO GROSSO DO SUL': 'MS', 'MATO GROSSO': 'MT',
+                         'ESPÍRITO SANTO': 'ES', 'ESPIRITO SANTO': 'ES',
+                         'RIO DE JANEIRO': 'RJ', 'BAHIA': 'BA'}
+            text_upper = text.upper()
+            for state, uf in state_map.items():
+                if state in text_upper:
+                    return uf
+    return None
+
+def get_tribunal_config(uf):
+    """Get tribunal config from UF. Returns dict with trf, sistema, uf_tribunal."""
+    return UF_TRIBUNAL_MAP.get(uf, {'trf': 'TRF-3', 'sistema': 'pje', 'uf_tribunal': uf or 'SP'})
+
 # INSS data (polo passivo) - fixed for all BPC cases
 INSS_DATA = {
     "nome": "INSTITUTO NACIONAL DO SEGURO SOCIAL - INSS",
@@ -1927,76 +2004,97 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
     is_eproc = 'eproc' in sistema.lower() if sistema else False
     defaults = BPC_DEFAULTS.get('eproc' if is_eproc else 'pje', {})
 
-    # Step 1: Set competencia + comarca
-    # PJe: competencia='DIREITO PREVIDENCIÁRIO', some TRFs need both in same PUT
-    # eProc: competencia='Federal' or area='Cível', needs comarca+rito first
-    comp_ok = False
-    comarca_ok = False
+    # === FIXED FLOW: query API for available values at each step ===
+    # Order: competencia → comarca → rito → classe → assunto → flags → partes
 
-    if is_eproc:
-        # eProc: comarca first, then rito, then competencia
-        if comarca_name:
-            safe_put({'comarca': comarca_name}, 'comarca')
-            comarca_ok = 'comarca' in filled
-            time.sleep(2)
-    else:
-        # PJe: try competencia alone first
-        area = defaults.get('area', 'DIREITO PREVIDENCIÁRIO')
-        safe_put({'competencia': area}, f'competencia ({area})')
-        comp_ok = any('competencia' in k for k in filled)
+    # Step 1: competencia (query available specialties first)
+    comp_ok = False
+    specialties = safe_get(f"/petition/specialties?idpeticoes={idpeticoes}", 'specialties')
+    if specialties:
+        spec_names = [s.get('nome', '') for s in specialties]
+        print(f"  [LEGALMAIL] Competencias disponiveis: {spec_names[:5]}")
+        # BPC always: try Previdenciário, then Cível, then Federal, then first available
+        for target in ['DIREITO PREVIDENCIÁRIO', 'PREVIDENCIÁRIO', 'CÍVEL', 'FEDERAL', 'JEF CÍVEL']:
+            match = [s for s in specialties if target.upper() in s.get('nome', '').upper()]
+            if match:
+                safe_put({'competencia': match[0]['nome']}, f"competencia ({match[0]['nome']})")
+                comp_ok = any('competencia' in k for k in filled)
+                if comp_ok:
+                    break
+                time.sleep(2)
+        if not comp_ok and specialties:
+            # Use first available
+            safe_put({'competencia': specialties[0]['nome']}, f"competencia ({specialties[0]['nome']})")
+            comp_ok = any('competencia' in k for k in filled)
         time.sleep(2)
 
-        if comp_ok and comarca_name:
+    # Step 2: comarca (query available comarcas)
+    comarca_ok = False
+    if comarca_name:
+        comarcas = safe_get(f"/petition/comarcas?idpeticoes={idpeticoes}", 'comarcas')
+        if comarcas:
+            comarca_names = [c.get('nome', '') for c in comarcas]
+            # Try exact match first
+            match = [c for c in comarcas if comarca_name.upper() in c.get('nome', '').upper()]
+            if not match:
+                # Try partial match (city name in comarca name)
+                city = comarca_name.split('-')[0].strip().split('/')[0].strip()
+                match = [c for c in comarcas if city.upper() in c.get('nome', '').upper()]
+            if match:
+                safe_put({'comarca': match[0]['nome']}, f"comarca ({match[0]['nome']})")
+                comarca_ok = 'comarca' in filled or any('comarca' in k for k in filled)
+            else:
+                print(f"  [WARN] Comarca '{comarca_name}' nao encontrada em {len(comarcas)} opcoes")
+                # Log first 5 options for debugging
+                for c in comarcas[:5]:
+                    print(f"    Opcao: {c.get('nome', '')}")
+        else:
+            # No comarcas endpoint or empty - try direct
             safe_put({'comarca': comarca_name}, 'comarca')
-            comarca_ok = 'comarca' in filled
-            time.sleep(2)
-        elif comarca_name:
-            # Some PJe TRFs need competencia+comarca in same PUT (e.g. TRF-1)
-            safe_put({'competencia': area, 'comarca': comarca_name}, f'comp+comarca ({area})')
-            if f'comp+comarca ({area})' in filled:
-                comp_ok = True
-                comarca_ok = True
-            time.sleep(2)
+            comarca_ok = 'comarca' in filled or any('comarca' in k for k in filled)
+        time.sleep(2)
 
-    # Step 2: Set rito
-    rito_target = defaults.get('rito', 'JUIZADO ESPECIAL FEDERAL')
+    # Step 3: rito (query available)
     ritos = safe_get(f"/petition/ritos?idpeticoes={idpeticoes}", 'ritos')
     if ritos:
-        match = [r for r in ritos if r.get('nome', '').upper() == rito_target.upper()]
-        if not match:
-            keyword = 'ORDINÁRIO' if 'ORDINÁRIO' in rito_target.upper() else 'JUIZADO'
-            match = [r for r in ritos if keyword in r.get('nome', '').upper()]
-        rito_name = match[0]['nome'] if match else ritos[0]['nome']
-        safe_put({'rito': rito_name}, f'rito ({rito_name})')
+        rito_names = [r.get('nome', '') for r in ritos]
+        print(f"  [LEGALMAIL] Ritos disponiveis: {rito_names[:5]}")
+        # BPC: prefer JUIZADO ESPECIAL FEDERAL, then ORDINÁRIO
+        rito_match = None
+        for target in ['JUIZADO ESPECIAL FEDERAL', 'JUIZADO ESPECIAL', 'ORDINÁRIO', 'COMUM']:
+            match = [r for r in ritos if target.upper() in r.get('nome', '').upper()]
+            if match:
+                rito_match = match[0]['nome']
+                break
+        if not rito_match and ritos:
+            rito_match = ritos[0]['nome']
+        if rito_match:
+            safe_put({'rito': rito_match}, f'rito ({rito_match})')
         time.sleep(2)
 
-    # Step 2b: eProc - retry competencia after rito (needs comarca+rito first)
-    if is_eproc and not comp_ok:
-        safe_put({'competencia': 'Federal'}, 'competencia (Federal)')
-        comp_ok = any('competencia' in k for k in filled)
-        time.sleep(2)
-
-    # Step 3: Set classe
-    classe_target = defaults.get('classe', 'PROCEDIMENTO COMUM')
-    classe_set = False
+    # Step 4: classe (query available)
     classes = safe_get(f"/petition/classes?idpeticoes={idpeticoes}", 'classes')
     if classes:
-        match = [c for c in classes if classe_target.upper() in c.get('nome', '').upper()]
-        if not match:
-            match = [c for c in classes if 'procedimento comum' in c.get('nome', '').lower()]
-        if match:
-            cls_name = match[0]['nome']
-            safe_put({'classe': cls_name}, f'classe ({cls_name})')
-            classe_set = any('classe' in k for k in filled)
-            time.sleep(2)
+        cls_names = [c.get('nome', '') for c in classes]
+        print(f"  [LEGALMAIL] Classes disponiveis: {cls_names[:5]}")
+        cls_match = None
+        for target in ['JUIZADO ESPECIAL', 'PROCEDIMENTO COMUM', 'PROCEDIMENTO DO JUIZADO']:
+            match = [c for c in classes if target.upper() in c.get('nome', '').upper()]
+            if match:
+                cls_match = match[0]['nome']
+                break
+        if not cls_match and classes:
+            cls_match = classes[0]['nome']
+        if cls_match:
+            safe_put({'classe': cls_match}, f'classe ({cls_match})')
+        time.sleep(2)
 
-    # Step 4: Set assunto (BPC - NUNCA usar benefício previdenciário por incapacidade)
+    # Step 5: assunto (query available - BPC NUNCA usar benefício previdenciário por incapacidade)
     assunto_set = False
     subjects = safe_get(f"/petition/subjects?idpeticoes={idpeticoes}", 'subjects')
     if subjects:
-        # Search for BPC Deficiente or Idoso
         search_term = 'defici' if tipo_beneficio == 'deficiente' else 'idoso'
-        # Find exact BPC match: "Benefício Assistencial (Art. 203,V CF/88) > Pessoa com Deficiência"
+        # Priority: "Benefício Assistencial" with "203" and deficiente/idoso
         for s in subjects:
             nome = s.get('nome', '')
             if 'assistencial' in nome.lower() and '203' in nome and search_term in nome.lower():
@@ -2004,10 +2102,18 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
                 assunto_set = any('assunto' in k for k in filled)
                 break
         if not assunto_set:
-            # Broader search
+            # Broader: any "assistencial" with search_term
             for s in subjects:
                 nome = s.get('nome', '')
                 if 'assistencial' in nome.lower() and search_term in nome.lower():
+                    safe_put({'assunto': nome}, f'assunto ({nome[:60]})')
+                    assunto_set = any('assunto' in k for k in filled)
+                    break
+        if not assunto_set:
+            # Even broader: any "assistencial"
+            for s in subjects:
+                nome = s.get('nome', '')
+                if 'assistencial' in nome.lower():
                     safe_put({'assunto': nome}, f'assunto ({nome[:60]})')
                     assunto_set = any('assunto' in k for k in filled)
                     break
