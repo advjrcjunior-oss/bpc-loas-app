@@ -2081,13 +2081,14 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
         return options[0].get(key, '') if options else None
 
     is_eproc = 'eproc' in sistema.lower() if sistema else False
+    # eProc uses /complaintsandpleadings/ prefix, PJe uses /petition/
+    prefix = "/complaintsandpleadings" if is_eproc else "/petition"
+    put_endpoint = f"{prefix}/initial?idpeticoes={idpeticoes}"
 
     # === Step 1: Query competencia (specialties) ===
-    # Try standard endpoint first, then alternative endpoint for eProc
-    specialties = safe_get(f"/petition/specialties?idpeticoes={idpeticoes}", 'specialties')
-    if not specialties:
-        # Alternative endpoint mentioned in API error messages
-        specialties = safe_get(f"/complaintsandpleadings/specialties?idpeticoes={idpeticoes}", 'specialties (alt)')
+    specialties = safe_get(f"{prefix}/specialties?idpeticoes={idpeticoes}", 'specialties')
+    if not specialties and is_eproc:
+        specialties = safe_get(f"/petition/specialties?idpeticoes={idpeticoes}", 'specialties (fallback)')
     if specialties:
         names = [s.get('nome', '') for s in specialties]
         print(f"  [LEGALMAIL] Competencias: {names[:5]}")
@@ -2107,15 +2108,15 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
 
     # Send competencia first to unlock dependent fields
     if resolved:
-        r = legalmail_request("put", f"/petition/initial?idpeticoes={idpeticoes}", json=resolved)
+        r = legalmail_request("put", put_endpoint, json=resolved)
         print(f"  [LEGALMAIL] PUT competencia: {r.status_code}")
         if r.status_code != 200:
             print(f"  [LEGALMAIL] PUT competencia response: {r.text[:200]}")
         time.sleep(2)
 
-    # === Step 2: Query comarca (CORRECT endpoint: /petition/county) ===
+    # === Step 2: Query comarca ===
     if comarca_name:
-        comarcas = safe_get(f"/petition/county?idpeticoes={idpeticoes}", 'comarcas')
+        comarcas = safe_get(f"{prefix}/county?idpeticoes={idpeticoes}", 'comarcas')
         if comarcas:
             comarca_names = [c.get('nome', '') for c in comarcas]
             print(f"  [LEGALMAIL] Comarcas ({len(comarcas)}): {comarca_names[:5]}")
@@ -2135,12 +2136,14 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
         else:
             resolved['comarca'] = comarca_name
         # Send accumulated fields to unlock next dependencies
-        r = legalmail_request("put", f"/petition/initial?idpeticoes={idpeticoes}", json=resolved)
+        r = legalmail_request("put", put_endpoint, json=resolved)
         print(f"  [LEGALMAIL] PUT competencia+comarca: {r.status_code}")
+        if r.status_code != 200:
+            print(f"  [LEGALMAIL] PUT response: {r.text[:200]}")
         time.sleep(2)
 
     # === Step 3: Query rito ===
-    ritos = safe_get(f"/petition/ritos?idpeticoes={idpeticoes}", 'ritos')
+    ritos = safe_get(f"{prefix}/ritos?idpeticoes={idpeticoes}", 'ritos')
     if ritos:
         names = [r.get('nome', '') for r in ritos]
         print(f"  [LEGALMAIL] Ritos: {names[:5]}")
@@ -2151,7 +2154,7 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
             print(f"  [LEGALMAIL] -> rito: {rito}")
 
     # === Step 4: Query classe ===
-    classes = safe_get(f"/petition/classes?idpeticoes={idpeticoes}", 'classes')
+    classes = safe_get(f"{prefix}/classes?idpeticoes={idpeticoes}", 'classes')
     if classes:
         names = [c.get('nome', '') for c in classes]
         print(f"  [LEGALMAIL] Classes: {names[:5]}")
@@ -2162,7 +2165,7 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
             print(f"  [LEGALMAIL] -> classe: {classe}")
 
     # === Step 5: Query assunto (BPC: NUNCA usar benefício previdenciário por incapacidade) ===
-    subjects = safe_get(f"/petition/subjects?idpeticoes={idpeticoes}", 'subjects')
+    subjects = safe_get(f"{prefix}/subjects?idpeticoes={idpeticoes}", 'subjects')
     if subjects:
         search_term = 'defici' if tipo_beneficio == 'deficiente' else 'idoso'
         assunto = None
@@ -2189,7 +2192,7 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
 
     # === Step 6: Query areas (for PJe) ===
     if not is_eproc:
-        areas = safe_get(f"/petition/areas?idpeticoes={idpeticoes}", 'areas')
+        areas = safe_get(f"{prefix}/areas?idpeticoes={idpeticoes}", 'areas')
         if areas:
             area = find_best_match(areas, ['DIREITO PREVIDENCIÁRIO', 'PREVIDENCIÁRIO', 'CÍVEL'])
             if area:
@@ -2212,13 +2215,13 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
 
     # === FINAL PUT: Send ALL accumulated fields at once ===
     print(f"  [LEGALMAIL] Enviando PUT final com {len(resolved)} campos: {list(resolved.keys())}")
-    r = legalmail_request("put", f"/petition/initial?idpeticoes={idpeticoes}", json=resolved)
+    r = legalmail_request("put", put_endpoint, json=resolved)
     if r.status_code == 200:
         print(f"  [LEGALMAIL] PUT final: OK")
     elif r.status_code == 429:
         print(f"  [LEGALMAIL] Rate limit no PUT final, aguardando 60s...")
         time.sleep(60)
-        r = legalmail_request("put", f"/petition/initial?idpeticoes={idpeticoes}", json=resolved)
+        r = legalmail_request("put", put_endpoint, json=resolved)
         if r.status_code == 200:
             print(f"  [LEGALMAIL] PUT final (retry): OK")
         else:
@@ -2354,7 +2357,20 @@ def _extract_client_data_from_folder(pasta):
                     break
             break
 
+    # Ensure required fields for LegalMail party creation
     if data.get('documento'):
+        if not data.get('endereco_cep'):
+            data['endereco_cep'] = '00000-000'
+        if not data.get('endereco_logradouro'):
+            data['endereco_logradouro'] = 'A informar'
+        if not data.get('endereco_numero'):
+            data['endereco_numero'] = 'S/N'
+        if not data.get('endereco_bairro'):
+            data['endereco_bairro'] = 'A informar'
+        if not data.get('endereco_cidade'):
+            data['endereco_cidade'] = 'A informar'
+        if not data.get('endereco_uf'):
+            data['endereco_uf'] = 'SP'
         return data
     return None
 
