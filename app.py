@@ -2106,21 +2106,27 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
             resolved['competencia'] = 'DIREITO PREVIDENCIÁRIO'
             print(f"  [LEGALMAIL] -> competencia (default PJe): DIREITO PREVIDENCIARIO")
 
-    # Send competencia first to unlock dependent fields
-    if resolved:
-        r = legalmail_request("put", put_endpoint, json=resolved)
-        print(f"  [LEGALMAIL] PUT competencia: {r.status_code}")
-        if r.status_code != 200:
-            print(f"  [LEGALMAIL] PUT competencia response: {r.text[:200]}")
-        time.sleep(2)
+    def do_put(payload, label):
+        """PUT with retry on 429."""
+        r = legalmail_request("put", put_endpoint, json=payload)
+        if r.status_code == 429:
+            print(f"  [LEGALMAIL] Rate limit, aguardando 60s...")
+            time.sleep(60)
+            r = legalmail_request("put", put_endpoint, json=payload)
+        if r.status_code == 200:
+            print(f"  [LEGALMAIL] PUT {label}: OK")
+        else:
+            print(f"  [LEGALMAIL] PUT {label}: {r.status_code} - {r.text[:200]}")
+        return r
 
-    # === Step 2: Query comarca ===
+    # === SEQUENTIAL FLOW: each PUT unlocks the next field ===
+
+    # Step 1.1: PUT comarca first (eProc requires comarca before anything)
     if comarca_name:
         comarcas = safe_get(f"{prefix}/county?idpeticoes={idpeticoes}", 'comarcas')
         if comarcas:
             comarca_names = [c.get('nome', '') for c in comarcas]
             print(f"  [LEGALMAIL] Comarcas ({len(comarcas)}): {comarca_names[:5]}")
-            # Try exact, then partial (city name)
             match = [c for c in comarcas if comarca_name.upper() in c.get('nome', '').upper()]
             if not match:
                 city = comarca_name.split('-')[0].strip().split('/')[0].strip()
@@ -2135,14 +2141,27 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
                     print(f"  [LEGALMAIL] -> comarca (fallback): {comarcas[0]['nome']}")
         else:
             resolved['comarca'] = comarca_name
-        # Send accumulated fields to unlock next dependencies
-        r = legalmail_request("put", put_endpoint, json=resolved)
-        print(f"  [LEGALMAIL] PUT competencia+comarca: {r.status_code}")
-        if r.status_code != 200:
-            print(f"  [LEGALMAIL] PUT response: {r.text[:200]}")
+        do_put({'comarca': resolved.get('comarca', comarca_name)}, 'comarca')
         time.sleep(2)
 
-    # === Step 3: Query rito ===
+    # Step 1.2: PUT competencia (after comarca)
+    specialties = safe_get(f"{prefix}/specialties?idpeticoes={idpeticoes}", 'specialties')
+    if not specialties and is_eproc:
+        specialties = safe_get(f"/petition/specialties?idpeticoes={idpeticoes}", 'specialties (fallback)')
+    if specialties:
+        names = [s.get('nome', '') for s in specialties]
+        print(f"  [LEGALMAIL] Competencias: {names[:5]}")
+        comp = find_best_match(specialties,
+            ['DIREITO PREVIDENCIÁRIO', 'PREVIDENCIÁRIO', 'CÍVEL', 'FEDERAL', 'JEF CÍVEL'])
+        if comp:
+            resolved['competencia'] = comp
+    if 'competencia' not in resolved:
+        resolved['competencia'] = 'Federal' if is_eproc else 'DIREITO PREVIDENCIÁRIO'
+    print(f"  [LEGALMAIL] -> competencia: {resolved['competencia']}")
+    do_put({'competencia': resolved['competencia']}, 'competencia')
+    time.sleep(2)
+
+    # === Step 3: Query rito (after comarca + competencia) and PUT ===
     ritos = safe_get(f"{prefix}/ritos?idpeticoes={idpeticoes}", 'ritos')
     if ritos:
         names = [r.get('nome', '') for r in ritos]
@@ -2152,8 +2171,10 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
         if rito:
             resolved['rito'] = rito
             print(f"  [LEGALMAIL] -> rito: {rito}")
+            do_put({'rito': rito}, 'rito')
+            time.sleep(2)
 
-    # === Step 4: Query classe ===
+    # === Step 4: Query classe and PUT ===
     classes = safe_get(f"{prefix}/classes?idpeticoes={idpeticoes}", 'classes')
     if classes:
         names = [c.get('nome', '') for c in classes]
@@ -2163,8 +2184,10 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
         if classe:
             resolved['classe'] = classe
             print(f"  [LEGALMAIL] -> classe: {classe}")
+            do_put({'classe': classe}, 'classe')
+            time.sleep(2)
 
-    # === Step 5: Query assunto (BPC: NUNCA usar benefício previdenciário por incapacidade) ===
+    # === Step 5: Query assunto and PUT (BPC: NUNCA usar benefício previdenciário por incapacidade) ===
     subjects = safe_get(f"{prefix}/subjects?idpeticoes={idpeticoes}", 'subjects')
     if subjects:
         search_term = 'defici' if tipo_beneficio == 'deficiente' else 'idoso'
@@ -2360,7 +2383,15 @@ def _extract_client_data_from_folder(pasta):
     # Ensure required fields for LegalMail party creation
     if data.get('documento'):
         if not data.get('endereco_cep'):
-            data['endereco_cep'] = '00000-000'
+            # CEP genérico por UF (primeiro CEP do range da capital)
+            _cep_por_uf = {'SP':'01000-000','RJ':'20000-000','MG':'30000-000','PR':'80000-000',
+                           'SC':'88000-000','RS':'90000-000','BA':'40000-000','PE':'50000-000',
+                           'CE':'60000-000','PA':'66000-000','GO':'74000-000','DF':'70000-000',
+                           'AM':'69000-000','MA':'65000-000','ES':'29000-000','MT':'78000-000',
+                           'MS':'79000-000','PI':'64000-000','RN':'59000-000','PB':'58000-000',
+                           'SE':'49000-000','AL':'57000-000','TO':'77000-000','RO':'76800-000',
+                           'AC':'69900-000','AP':'68900-000','RR':'69300-000'}
+            data['endereco_cep'] = _cep_por_uf.get(data.get('endereco_uf', ''), '01000-000')
         if not data.get('endereco_logradouro'):
             data['endereco_logradouro'] = 'A informar'
         if not data.get('endereco_numero'):
