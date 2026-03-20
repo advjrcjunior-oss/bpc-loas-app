@@ -1702,7 +1702,7 @@ UF_TRIBUNAL_MAP = {
     # TRF-1 (DF, GO, MG, BA, PI, MA, PA, AM, AC, AP, RR, RO, TO, MT)
     'DF': {'trf': 'TRF-1', 'sistema': 'pje_jfdf', 'uf_tribunal': 'DF'},
     'GO': {'trf': 'TRF-1', 'sistema': 'pje_jfgo', 'uf_tribunal': 'GO'},
-    'MG': {'trf': 'TRF-1', 'sistema': 'pje_jfmg', 'uf_tribunal': 'MG'},
+    'MG': {'trf': 'TRF-6', 'sistema': 'pje_jfmg', 'uf_tribunal': 'MG'},
     'BA': {'trf': 'TRF-1', 'sistema': 'pje_jfba', 'uf_tribunal': 'BA'},
     'PI': {'trf': 'TRF-1', 'sistema': 'pje_jfpi', 'uf_tribunal': 'PI'},
     'MA': {'trf': 'TRF-1', 'sistema': 'pje_jfma', 'uf_tribunal': 'MA'},
@@ -1762,7 +1762,15 @@ def detect_uf_from_folder(pasta):
                          'RIO GRANDE DO SUL': 'RS', 'GOIÁS': 'GO', 'GOIAS': 'GO',
                          'MATO GROSSO DO SUL': 'MS', 'MATO GROSSO': 'MT',
                          'ESPÍRITO SANTO': 'ES', 'ESPIRITO SANTO': 'ES',
-                         'RIO DE JANEIRO': 'RJ', 'BAHIA': 'BA'}
+                         'RIO DE JANEIRO': 'RJ', 'BAHIA': 'BA',
+                         'PERNAMBUCO': 'PE', 'CEARÁ': 'CE', 'CEARA': 'CE',
+                         'PARÁ': 'PA', 'PARA': 'PA', 'AMAZONAS': 'AM',
+                         'MARANHÃO': 'MA', 'MARANHAO': 'MA', 'PIAUÍ': 'PI', 'PIAUI': 'PI',
+                         'RIO GRANDE DO NORTE': 'RN', 'PARAÍBA': 'PB', 'PARAIBA': 'PB',
+                         'SERGIPE': 'SE', 'ALAGOAS': 'AL', 'TOCANTINS': 'TO',
+                         'RONDÔNIA': 'RO', 'RONDONIA': 'RO', 'ACRE': 'AC',
+                         'AMAPÁ': 'AP', 'AMAPA': 'AP', 'RORAIMA': 'RR',
+                         'DISTRITO FEDERAL': 'DF'}
             text_upper = text.upper()
             for state, uf in state_map.items():
                 if state in text_upper:
@@ -1943,16 +1951,31 @@ def legalmail_create_party(party_data):
 
 
 def legalmail_find_party_by_doc(documento):
-    """Find existing party by CPF/CNPJ. Returns party ID or None."""
+    """Find existing party by CPF/CNPJ using search endpoint. Returns party ID or None."""
+    doc_clean = documento.replace('.', '').replace('-', '').replace('/', '')
     try:
-        r = legalmail_request("get", "/parts")
+        # Try search endpoint first (more efficient)
+        r = legalmail_request("get", f"/parts/search?documento={doc_clean}")
         if r.status_code == 200:
-            parts = r.json()
-            doc_clean = documento.replace('.', '').replace('-', '').replace('/', '')
+            parts = r.json() if isinstance(r.json(), list) else r.json().get('data', [])
+            if parts:
+                return parts[0].get('id')
+        # Fallback: paginated listing
+        offset = 0
+        while True:
+            r = legalmail_request("get", f"/parts?limit=50&offset={offset}")
+            if r.status_code != 200:
+                break
+            parts = r.json() if isinstance(r.json(), list) else []
+            if not parts:
+                break
             for p in parts:
                 p_doc = str(p.get('documento', '')).replace('.', '').replace('-', '').replace('/', '')
                 if p_doc == doc_clean:
                     return p.get('id')
+            if len(parts) < 50:
+                break
+            offset += 50
     except Exception:
         pass
     return None
@@ -1961,35 +1984,18 @@ def legalmail_find_party_by_doc(documento):
 def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
                            id_polo_ativo=None, id_polo_passivo=None,
                            tipo_beneficio='deficiente'):
-    """Fill all petition fields step by step following API dependency chain.
+    """Fill all petition fields by accumulating values and sending a SINGLE PUT.
 
-    Flow: comarca -> rito -> competencia -> classe -> assunto -> flags/valor -> parties
-    tipo_beneficio: 'deficiente' or 'idoso' (for eProc assunto selection)
+    The LegalMail PUT /petition/initial requires ALL required fields on every call.
+    This function queries available options step by step, accumulates them into a
+    single payload, and sends one PUT at the end.
+
+    tipo_beneficio: 'deficiente' or 'idoso' (for assunto selection)
     Returns dict with status.
     """
     import time
-    filled = {}
+    resolved = {}
     errors = []
-
-    def safe_put(payload, label):
-        r = legalmail_request("put", f"/petition/initial?idpeticoes={idpeticoes}", json=payload)
-        if r.status_code == 200:
-            print(f"  [LEGALMAIL] {label}: OK")
-            filled[label] = True
-        elif r.status_code == 429:
-            print(f"  [LEGALMAIL] Rate limit, aguardando 60s...")
-            time.sleep(60)
-            r = legalmail_request("put", f"/petition/initial?idpeticoes={idpeticoes}", json=payload)
-            if r.status_code == 200:
-                print(f"  [LEGALMAIL] {label}: OK (retry)")
-                filled[label] = True
-            else:
-                errors.append(f"{label}: {r.status_code} {r.text[:150]}")
-                print(f"  [WARN] {label}: {r.status_code}")
-        else:
-            errors.append(f"{label}: {r.status_code} {r.text[:150]}")
-            print(f"  [WARN] {label}: {r.status_code} - {r.text[:150]}")
-        return r
 
     def safe_get(endpoint, label):
         r = legalmail_request("get", endpoint)
@@ -1997,151 +2003,158 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
             print(f"  [LEGALMAIL] Rate limit em {label}, aguardando 60s...")
             time.sleep(60)
             r = legalmail_request("get", endpoint)
-        if r.status_code == 200 and r.text.strip().startswith('['):
-            return r.json()
+        if r.status_code == 200:
+            try:
+                data = r.json()
+                if isinstance(data, list):
+                    return data
+            except Exception:
+                pass
+        print(f"  [WARN] {label}: status {r.status_code}")
         return []
 
+    def find_best_match(options, targets, key='nome'):
+        """Find best match from options list by trying targets in priority order."""
+        for target in targets:
+            match = [o for o in options if target.upper() in o.get(key, '').upper()]
+            if match:
+                return match[0].get(key, '')
+        return options[0].get(key, '') if options else None
+
     is_eproc = 'eproc' in sistema.lower() if sistema else False
-    defaults = BPC_DEFAULTS.get('eproc' if is_eproc else 'pje', {})
 
-    # === FIXED FLOW: query API for available values at each step ===
-    # Order: competencia → comarca → rito → classe → assunto → flags → partes
-
-    # Step 1: competencia (query available specialties first)
-    comp_ok = False
+    # === Step 1: Query competencia (specialties) ===
     specialties = safe_get(f"/petition/specialties?idpeticoes={idpeticoes}", 'specialties')
     if specialties:
-        spec_names = [s.get('nome', '') for s in specialties]
-        print(f"  [LEGALMAIL] Competencias disponiveis: {spec_names[:5]}")
-        # BPC always: try Previdenciário, then Cível, then Federal, then first available
-        for target in ['DIREITO PREVIDENCIÁRIO', 'PREVIDENCIÁRIO', 'CÍVEL', 'FEDERAL', 'JEF CÍVEL']:
-            match = [s for s in specialties if target.upper() in s.get('nome', '').upper()]
-            if match:
-                safe_put({'competencia': match[0]['nome']}, f"competencia ({match[0]['nome']})")
-                comp_ok = any('competencia' in k for k in filled)
-                if comp_ok:
-                    break
-                time.sleep(2)
-        if not comp_ok and specialties:
-            # Use first available
-            safe_put({'competencia': specialties[0]['nome']}, f"competencia ({specialties[0]['nome']})")
-            comp_ok = any('competencia' in k for k in filled)
-        time.sleep(2)
+        names = [s.get('nome', '') for s in specialties]
+        print(f"  [LEGALMAIL] Competencias: {names[:5]}")
+        comp = find_best_match(specialties,
+            ['DIREITO PREVIDENCIÁRIO', 'PREVIDENCIÁRIO', 'CÍVEL', 'FEDERAL', 'JEF CÍVEL'])
+        if comp:
+            resolved['competencia'] = comp
+            print(f"  [LEGALMAIL] → competencia: {comp}")
+        # Send competencia first to unlock dependent fields
+        if resolved:
+            r = legalmail_request("put", f"/petition/initial?idpeticoes={idpeticoes}", json=resolved)
+            print(f"  [LEGALMAIL] PUT competencia: {r.status_code}")
+            time.sleep(2)
 
-    # Step 2: comarca (query available comarcas)
-    comarca_ok = False
+    # === Step 2: Query comarca (CORRECT endpoint: /petition/county) ===
     if comarca_name:
-        comarcas = safe_get(f"/petition/comarcas?idpeticoes={idpeticoes}", 'comarcas')
+        comarcas = safe_get(f"/petition/county?idpeticoes={idpeticoes}", 'comarcas')
         if comarcas:
             comarca_names = [c.get('nome', '') for c in comarcas]
-            # Try exact match first
+            print(f"  [LEGALMAIL] Comarcas ({len(comarcas)}): {comarca_names[:5]}")
+            # Try exact, then partial (city name)
             match = [c for c in comarcas if comarca_name.upper() in c.get('nome', '').upper()]
             if not match:
-                # Try partial match (city name in comarca name)
                 city = comarca_name.split('-')[0].strip().split('/')[0].strip()
                 match = [c for c in comarcas if city.upper() in c.get('nome', '').upper()]
             if match:
-                safe_put({'comarca': match[0]['nome']}, f"comarca ({match[0]['nome']})")
-                comarca_ok = 'comarca' in filled or any('comarca' in k for k in filled)
+                resolved['comarca'] = match[0]['nome']
+                print(f"  [LEGALMAIL] → comarca: {match[0]['nome']}")
             else:
-                print(f"  [WARN] Comarca '{comarca_name}' nao encontrada em {len(comarcas)} opcoes")
-                # Log first 5 options for debugging
-                for c in comarcas[:5]:
-                    print(f"    Opcao: {c.get('nome', '')}")
+                print(f"  [WARN] Comarca '{comarca_name}' nao encontrada. Opcoes: {comarca_names[:5]}")
+                if comarcas:
+                    resolved['comarca'] = comarcas[0]['nome']
+                    print(f"  [LEGALMAIL] → comarca (fallback): {comarcas[0]['nome']}")
         else:
-            # No comarcas endpoint or empty - try direct
-            safe_put({'comarca': comarca_name}, 'comarca')
-            comarca_ok = 'comarca' in filled or any('comarca' in k for k in filled)
+            resolved['comarca'] = comarca_name
+        # Send accumulated fields to unlock next dependencies
+        r = legalmail_request("put", f"/petition/initial?idpeticoes={idpeticoes}", json=resolved)
+        print(f"  [LEGALMAIL] PUT competencia+comarca: {r.status_code}")
         time.sleep(2)
 
-    # Step 3: rito (query available)
+    # === Step 3: Query rito ===
     ritos = safe_get(f"/petition/ritos?idpeticoes={idpeticoes}", 'ritos')
     if ritos:
-        rito_names = [r.get('nome', '') for r in ritos]
-        print(f"  [LEGALMAIL] Ritos disponiveis: {rito_names[:5]}")
-        # BPC: prefer JUIZADO ESPECIAL FEDERAL, then ORDINÁRIO
-        rito_match = None
-        for target in ['JUIZADO ESPECIAL FEDERAL', 'JUIZADO ESPECIAL', 'ORDINÁRIO', 'COMUM']:
-            match = [r for r in ritos if target.upper() in r.get('nome', '').upper()]
-            if match:
-                rito_match = match[0]['nome']
-                break
-        if not rito_match and ritos:
-            rito_match = ritos[0]['nome']
-        if rito_match:
-            safe_put({'rito': rito_match}, f'rito ({rito_match})')
-        time.sleep(2)
+        names = [r.get('nome', '') for r in ritos]
+        print(f"  [LEGALMAIL] Ritos: {names[:5]}")
+        rito = find_best_match(ritos,
+            ['JUIZADO ESPECIAL FEDERAL', 'JUIZADO ESPECIAL', 'ORDINÁRIO', 'COMUM'])
+        if rito:
+            resolved['rito'] = rito
+            print(f"  [LEGALMAIL] → rito: {rito}")
 
-    # Step 4: classe (query available)
+    # === Step 4: Query classe ===
     classes = safe_get(f"/petition/classes?idpeticoes={idpeticoes}", 'classes')
     if classes:
-        cls_names = [c.get('nome', '') for c in classes]
-        print(f"  [LEGALMAIL] Classes disponiveis: {cls_names[:5]}")
-        cls_match = None
-        for target in ['JUIZADO ESPECIAL', 'PROCEDIMENTO COMUM', 'PROCEDIMENTO DO JUIZADO']:
-            match = [c for c in classes if target.upper() in c.get('nome', '').upper()]
-            if match:
-                cls_match = match[0]['nome']
-                break
-        if not cls_match and classes:
-            cls_match = classes[0]['nome']
-        if cls_match:
-            safe_put({'classe': cls_match}, f'classe ({cls_match})')
-        time.sleep(2)
+        names = [c.get('nome', '') for c in classes]
+        print(f"  [LEGALMAIL] Classes: {names[:5]}")
+        classe = find_best_match(classes,
+            ['JUIZADO ESPECIAL', 'PROCEDIMENTO COMUM', 'PROCEDIMENTO DO JUIZADO'])
+        if classe:
+            resolved['classe'] = classe
+            print(f"  [LEGALMAIL] → classe: {classe}")
 
-    # Step 5: assunto (query available - BPC NUNCA usar benefício previdenciário por incapacidade)
-    assunto_set = False
+    # === Step 5: Query assunto (BPC: NUNCA usar benefício previdenciário por incapacidade) ===
     subjects = safe_get(f"/petition/subjects?idpeticoes={idpeticoes}", 'subjects')
     if subjects:
         search_term = 'defici' if tipo_beneficio == 'deficiente' else 'idoso'
-        # Priority: "Benefício Assistencial" with "203" and deficiente/idoso
+        assunto = None
+        # Priority 1: "assistencial" + "203" + deficiente/idoso
         for s in subjects:
             nome = s.get('nome', '')
             if 'assistencial' in nome.lower() and '203' in nome and search_term in nome.lower():
-                safe_put({'assunto': nome}, f'assunto ({nome[:60]})')
-                assunto_set = any('assunto' in k for k in filled)
-                break
-        if not assunto_set:
-            # Broader: any "assistencial" with search_term
+                assunto = nome; break
+        # Priority 2: "assistencial" + deficiente/idoso
+        if not assunto:
             for s in subjects:
                 nome = s.get('nome', '')
                 if 'assistencial' in nome.lower() and search_term in nome.lower():
-                    safe_put({'assunto': nome}, f'assunto ({nome[:60]})')
-                    assunto_set = any('assunto' in k for k in filled)
-                    break
-        if not assunto_set:
-            # Even broader: any "assistencial"
+                    assunto = nome; break
+        # Priority 3: any "assistencial"
+        if not assunto:
             for s in subjects:
                 nome = s.get('nome', '')
                 if 'assistencial' in nome.lower():
-                    safe_put({'assunto': nome}, f'assunto ({nome[:60]})')
-                    assunto_set = any('assunto' in k for k in filled)
-                    break
-        time.sleep(2)
+                    assunto = nome; break
+        if assunto:
+            resolved['assunto'] = assunto
+            print(f"  [LEGALMAIL] → assunto: {assunto[:60]}")
 
-    # Step 6: Set flags and valor da causa
-    flags_payload = {
-        'gratuidade': True,
-        'liminar': True,
-        '100digital': True,
-        'renuncia60Salarios': True,
-        'distribuicao': 'Por sorteio',
-    }
+    # === Step 6: Query areas (for PJe) ===
+    if not is_eproc:
+        areas = safe_get(f"/petition/areas?idpeticoes={idpeticoes}", 'areas')
+        if areas:
+            area = find_best_match(areas, ['DIREITO PREVIDENCIÁRIO', 'PREVIDENCIÁRIO', 'CÍVEL'])
+            if area:
+                resolved['area'] = area
+
+    # === Step 7: Set flags, valor da causa, distribuição ===
+    resolved['gratuidade'] = True
+    resolved['liminar'] = True
+    resolved['100digital'] = True
+    resolved['renuncia60Salarios'] = True
+    resolved['distribuicao'] = 'Por sorteio'
     if valor_causa:
-        flags_payload['valorCausa'] = valor_causa
-    safe_put(flags_payload, 'flags + valorCausa')
-    time.sleep(2)
+        resolved['valorCausa'] = valor_causa
 
-    # Step 7: Set parties
-    parties_payload = {}
+    # === Step 8: Set parties ===
     if id_polo_ativo:
-        parties_payload['idpoloativo'] = [id_polo_ativo] if isinstance(id_polo_ativo, int) else id_polo_ativo
+        resolved['idpoloativo'] = [id_polo_ativo] if isinstance(id_polo_ativo, int) else id_polo_ativo
     if id_polo_passivo:
-        parties_payload['idpolopassivo'] = [id_polo_passivo] if isinstance(id_polo_passivo, int) else id_polo_passivo
-    if parties_payload:
-        safe_put(parties_payload, 'partes')
+        resolved['idpolopassivo'] = [id_polo_passivo] if isinstance(id_polo_passivo, int) else id_polo_passivo
 
-    return {"filled": filled, "errors": errors}
+    # === FINAL PUT: Send ALL accumulated fields at once ===
+    print(f"  [LEGALMAIL] Enviando PUT final com {len(resolved)} campos: {list(resolved.keys())}")
+    r = legalmail_request("put", f"/petition/initial?idpeticoes={idpeticoes}", json=resolved)
+    if r.status_code == 200:
+        print(f"  [LEGALMAIL] PUT final: OK")
+    elif r.status_code == 429:
+        print(f"  [LEGALMAIL] Rate limit no PUT final, aguardando 60s...")
+        time.sleep(60)
+        r = legalmail_request("put", f"/petition/initial?idpeticoes={idpeticoes}", json=resolved)
+        if r.status_code == 200:
+            print(f"  [LEGALMAIL] PUT final (retry): OK")
+        else:
+            errors.append(f"PUT final: {r.status_code} {r.text[:200]}")
+            print(f"  [ERRO] PUT final: {r.status_code} - {r.text[:200]}")
+    else:
+        errors.append(f"PUT final: {r.status_code} {r.text[:200]}")
+        print(f"  [ERRO] PUT final: {r.status_code} - {r.text[:200]}")
+
+    return {"filled": resolved, "errors": errors}
 
 
 def docx_to_pdf(docx_path):
@@ -2186,11 +2199,20 @@ try {{
 
 def legalmail_request(method, endpoint, **kwargs):
     """Make authenticated request to LegalMail API."""
-    import requests
+    import requests as _requests
     sep = '&' if '?' in endpoint else '?'
     url = f"{LEGALMAIL_BASE}{endpoint}{sep}api_key={LEGALMAIL_API_KEY}"
-    resp = getattr(requests, method)(url, **kwargs, timeout=30)
-    return resp
+    try:
+        resp = getattr(_requests, method)(url, **kwargs, timeout=30)
+        return resp
+    except _requests.exceptions.RequestException as e:
+        print(f"  [LEGALMAIL] Erro de rede em {method.upper()} {endpoint}: {e}")
+        # Return a fake response to avoid crashes
+        class FakeResp:
+            status_code = 503
+            text = str(e)
+            def json(self): return {}
+        return FakeResp()
 
 
 def legalmail_criar_rascunho(pasta, tribunal, sistema, comarca, assunto=None,
@@ -2216,6 +2238,8 @@ def legalmail_criar_rascunho(pasta, tribunal, sistema, comarca, assunto=None,
 
     if not LEGALMAIL_API_KEY:
         return {"error": "LEGALMAIL_API_KEY não configurada"}
+    if not LEGALMAIL_CERT_ID:
+        return {"error": "LEGALMAIL_CERTIFICADO_ID não configurado ou inválido"}
 
     # Step 1: Create petition initial (draft)
     print(f"  [LEGALMAIL] Criando rascunho: {tribunal}/{sistema} - {comarca}...")
