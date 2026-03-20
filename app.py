@@ -2289,6 +2289,76 @@ def legalmail_request(method, endpoint, **kwargs):
         return FakeResp()
 
 
+def _extract_client_data_from_folder(pasta):
+    """Extract client name, CPF, and address from documents in organized folder.
+    Uses OCR on procuracao and comprovante de residencia."""
+    import re as _re
+    data = {}
+
+    # Get client name from folder name (format: "NOME_RESPONSAVEL")
+    folder_name = os.path.basename(pasta)
+    parts = folder_name.split("_")
+    data['nome'] = parts[0].strip()
+
+    files = sorted(os.listdir(pasta))
+
+    # Extract CPF from procuracao or RG
+    for f in files:
+        fl = f.lower()
+        if '2- procuracao' in fl or 'procura' in fl:
+            text = mistral_ocr(os.path.join(pasta, f))
+            if not text:
+                continue
+            # Search CPF pattern
+            cpf_match = _re.search(r'\b(\d{3}[.\s]?\d{3}[.\s]?\d{3}[-.\s]?\d{2})\b', text)
+            if cpf_match:
+                cpf = cpf_match.group(1)
+                cpf_clean = _re.sub(r'[^\d]', '', cpf)
+                if len(cpf_clean) == 11:
+                    data['documento'] = f"{cpf_clean[:3]}.{cpf_clean[3:6]}.{cpf_clean[6:9]}-{cpf_clean[9:]}"
+                    break
+
+    # If no CPF from procuracao, try RG/ID docs
+    if not data.get('documento'):
+        for f in files:
+            fl = f.lower()
+            if '5- ' in fl or '6- ' in fl or 'identifica' in fl or 'rg' in fl:
+                text = mistral_ocr(os.path.join(pasta, f))
+                if not text:
+                    continue
+                cpf_match = _re.search(r'\b(\d{3}[.\s]?\d{3}[.\s]?\d{3}[-.\s]?\d{2})\b', text)
+                if cpf_match:
+                    cpf = cpf_match.group(1)
+                    cpf_clean = _re.sub(r'[^\d]', '', cpf)
+                    if len(cpf_clean) == 11:
+                        data['documento'] = f"{cpf_clean[:3]}.{cpf_clean[3:6]}.{cpf_clean[6:9]}-{cpf_clean[9:]}"
+                        break
+
+    # Extract address from comprovante de residencia
+    for f in files:
+        fl = f.lower()
+        if '7- comprovante' in fl:
+            text = mistral_ocr(os.path.join(pasta, f))
+            if not text:
+                continue
+            # Try to extract CEP
+            cep_match = _re.search(r'\b(\d{5})-?(\d{3})\b', text)
+            if cep_match:
+                data['endereco_cep'] = f"{cep_match.group(1)}-{cep_match.group(2)}"
+            # Extract city/UF
+            for uf in ['SP','RJ','MG','PR','SC','RS','GO','MT','MS','BA','PE','CE','PA','AM','MA','PI','RN','PB','SE','AL','TO','RO','AC','AP','RR','ES','DF']:
+                city_match = _re.search(rf'([A-Za-zÀ-ú][\w\s]+)\s*[-/]\s*{uf}\b', text)
+                if city_match:
+                    data['endereco_cidade'] = city_match.group(1).strip()
+                    data['endereco_uf'] = uf
+                    break
+            break
+
+    if data.get('documento'):
+        return data
+    return None
+
+
 def legalmail_criar_rascunho(pasta, tribunal, sistema, comarca, assunto=None,
                              instancia="1", uf_tribunal="", client_data=None):
     """Create a draft petition on LegalMail with ALL fields filled and documents uploaded.
@@ -2349,6 +2419,15 @@ def legalmail_criar_rascunho(pasta, tribunal, sistema, comarca, assunto=None,
         return {"status": "erro", "error": f"ID da petição não retornado: {data}"}
     print(f"  [LEGALMAIL] Rascunho criado: idpeticoes={idpeticoes}")
 
+    # Step 1.5: Auto-detect comarca from client address if comarca is just a UF code
+    if comarca and len(comarca) <= 2:
+        detected_city = detect_cidade_from_folder(pasta)
+        if detected_city:
+            print(f"  [LEGALMAIL] Cidade detectada do endereco: {detected_city}")
+            comarca = detected_city
+        else:
+            print(f"  [WARN] Comarca e apenas UF ({comarca}), cidade nao detectada")
+
     # Step 2: Extract valor da causa from xlsx
     valor_causa = extract_valor_causa(pasta)
     if valor_causa:
@@ -2356,7 +2435,14 @@ def legalmail_criar_rascunho(pasta, tribunal, sistema, comarca, assunto=None,
     else:
         print(f"  [WARN] Valor da causa não encontrado no xlsx")
 
-    # Step 3: Create/find parties
+    # Step 3: Auto-extract client data if not provided
+    if not client_data or not client_data.get('documento'):
+        print(f"  [LEGALMAIL] Extraindo dados do cliente dos documentos...")
+        client_data = _extract_client_data_from_folder(pasta)
+        if client_data:
+            print(f"  [LEGALMAIL] Cliente: {client_data.get('nome', '?')} CPF: {client_data.get('documento', '?')}")
+
+    # Create/find parties
     id_polo_ativo = None
     id_polo_passivo = None
 
@@ -2364,14 +2450,17 @@ def legalmail_criar_rascunho(pasta, tribunal, sistema, comarca, assunto=None,
     time.sleep(2)
     id_polo_passivo = legalmail_get_or_create_inss()
 
-    # Polo ativo (client) - POST /parts is idempotent (same CPF returns same ID)
+    # Polo ativo (client)
     if client_data and client_data.get('documento'):
         time.sleep(2)
         party_data = {**client_data, 'polo': 'ativo'}
-        # Include etnia for tribunals that require it (TRF-2, etc.)
         if 'etnia' not in party_data:
             party_data['etnia'] = 'Não declarada'
         id_polo_ativo = legalmail_create_party(party_data)
+        if id_polo_ativo:
+            print(f"  [LEGALMAIL] Polo ativo criado: id={id_polo_ativo}")
+    else:
+        print(f"  [WARN] Dados do cliente nao encontrados - polo ativo nao preenchido")
 
     # Step 4: Fill all petition fields (comarca -> rito -> competencia -> classe -> assunto -> flags -> parties)
     time.sleep(2)
