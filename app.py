@@ -272,16 +272,50 @@ def build_exec_globals():
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
+    # Restricted builtins — block dangerous functions
+    _safe_builtins = {
+        k: v for k, v in __builtins__.__dict__.items()
+        if k in {
+            'print', 'len', 'range', 'int', 'str', 'float', 'bool', 'list', 'dict',
+            'tuple', 'set', 'frozenset', 'enumerate', 'zip', 'sorted', 'reversed',
+            'min', 'max', 'sum', 'round', 'abs', 'isinstance', 'type', 'hasattr',
+            'getattr', 'setattr', 'True', 'False', 'None', 'map', 'filter', 'any',
+            'all', 'ValueError', 'TypeError', 'KeyError', 'IndexError', 'Exception',
+            'StopIteration', 'format', 'repr', 'chr', 'ord', 'hex', 'bin', 'oct',
+            'divmod', 'pow', 'iter', 'next', 'super', 'property', 'staticmethod',
+            'classmethod', 'object',
+        }
+    } if hasattr(__builtins__, '__dict__') else {
+        k: __builtins__[k] for k in __builtins__
+        if k in {
+            'print', 'len', 'range', 'int', 'str', 'float', 'bool', 'list', 'dict',
+            'tuple', 'set', 'frozenset', 'enumerate', 'zip', 'sorted', 'reversed',
+            'min', 'max', 'sum', 'round', 'abs', 'isinstance', 'type',
+            'True', 'False', 'None', 'map', 'filter', 'any', 'all',
+            'ValueError', 'TypeError', 'KeyError', 'IndexError', 'Exception',
+        }
+    }
+
+    # Restricted os — only allow path operations within OUTPUT_DIR
+    class _SafeOS:
+        path = os.path
+        listdir = staticmethod(os.listdir)
+        makedirs = staticmethod(os.makedirs)
+        remove = staticmethod(os.remove)
+        rename = staticmethod(os.rename)
+        sep = os.sep
+        linesep = os.linesep
+
     g = {
-        "__builtins__": __builtins__,
+        "__builtins__": _safe_builtins,
         # Paths
         "TIMBRADO_PATH": TIMBRADO_PATH,
         "OUTPUT_DIR": OUTPUT_DIR,
-        # Standard modules
-        "os": os,
+        # Standard modules (restricted)
+        "os": _SafeOS(),
         "re": re,
         "json": json,
-        "shutil": shutil,
+        "shutil": None,  # blocked — use helpers instead
         "zipfile": zipfile,
         "datetime": dt_module.datetime,  # expose datetime.datetime as "datetime" so datetime.now() works
         "date": dt_module.date,
@@ -320,10 +354,11 @@ def build_exec_globals():
 
 
 @app.route("/api/gerar", methods=["POST"])
+@require_admin
 def gerar():
     try:
         data = request.get_json()
-        client = anthropic.Anthropic(timeout=30.0)
+        client = anthropic.Anthropic(timeout=120.0)
         skill_prompt = load_skill_prompt()
 
         # Clean output directory
@@ -475,6 +510,7 @@ Gere um UNICO bloco de codigo Python. NAO gere outros documentos.
 
 
 @app.route("/api/lote", methods=["POST"])
+@require_admin
 def lote():
     """Process multiple client folders end-to-end.
     For each folder: analyze docs → extract data → generate all documents → copy to folder.
@@ -736,7 +772,7 @@ def analisar_pasta_internal(pasta):
 
     content_parts.append({"type": "text", "text": EXTRACTION_PROMPT})
 
-    client = anthropic.Anthropic(timeout=30.0)
+    client = anthropic.Anthropic(timeout=120.0)
     response_text = ""
     with client.messages.stream(
         model="claude-haiku-4-5-20251001",
@@ -755,7 +791,7 @@ def analisar_pasta_internal(pasta):
 
 def gerar_documentos_internal(data):
     """Internal: generate all 4 documents from extracted data. Returns list of filenames."""
-    client = anthropic.Anthropic(timeout=30.0)
+    client = anthropic.Anthropic(timeout=120.0)
     skill_prompt = load_skill_prompt()
 
     # Clean output
@@ -860,6 +896,7 @@ REGRAS CRITICAS:
 
 
 @app.route("/api/analisar-pasta", methods=["POST"])
+@require_admin
 def analisar_pasta():
     """Analyze documents in a folder and extract client data.
 
@@ -1010,7 +1047,7 @@ def analisar_pasta():
         })
 
         # === PASS 3: Call Claude API with streaming ===
-        client = anthropic.Anthropic(timeout=30.0)
+        client = anthropic.Anthropic(timeout=120.0)
         response_text = ""
         with client.messages.stream(
             model="claude-haiku-4-5-20251001",
@@ -1227,7 +1264,21 @@ DADOS DO PROCESSO:
 
 
 def sanitize_code(code):
-    """Clean up generated code to avoid common errors."""
+    """Clean up generated code to avoid common errors and block dangerous patterns."""
+    # SECURITY: Block dangerous patterns that could be injected via prompt injection
+    _DANGEROUS_PATTERNS = [
+        '__import__', 'subprocess', 'os.system', 'os.popen', 'os.exec',
+        'eval(', 'exec(', 'compile(', 'globals(', 'locals(',
+        'socket', 'urllib', 'requests.', 'httpx.', 'http.client',
+        'shutil.rmtree', 'shutil.move', 'open(', 'builtins',
+        'importlib', 'sys.exit', 'os.kill', 'signal.',
+    ]
+    for pattern in _DANGEROUS_PATTERNS:
+        if pattern in code:
+            # Remove the dangerous line entirely
+            code = '\n'.join(line for line in code.split('\n')
+                           if pattern not in line)
+
     # Remove emoji/unicode chars that break Windows charmap
     code = re.sub(r'[\U00010000-\U0010ffff]', '', code)
     code = code.replace('\u2713', 'v').replace('\u2705', '[OK]').replace('\u274c', '[X]')
@@ -2877,7 +2928,7 @@ def monitor_fetch_movement_text(idmovimentacoes):
 def monitor_analyze_movement(numero_processo, tribunal, titulo, texto):
     """Use Claude to analyze a movement/intimation."""
     try:
-        client_ai = anthropic.Anthropic(timeout=30.0)
+        client_ai = anthropic.Anthropic(timeout=120.0)
         prompt = f"""Você é um assistente jurídico. Analise esta movimentação processual:
 
 Processo: {numero_processo} | Tribunal: {tribunal}
@@ -3498,7 +3549,7 @@ def legalmail_analisar_intimacao():
         return jsonify({"error": "Nenhum texto para analisar"}), 400
 
     # Use Claude to analyze
-    client = anthropic.Anthropic(timeout=30.0)
+    client = anthropic.Anthropic(timeout=120.0)
     analysis_prompt = f"""Você é um assistente jurídico experiente.
 
 Analise a movimentação processual abaixo com atenção a:
@@ -3614,7 +3665,7 @@ def legalmail_criar_peticao_intermediaria():
     # Step 2: If text provided, generate PDF with Claude
     if texto_peticao and not pdf_path:
         try:
-            client_ai = anthropic.Anthropic(timeout=30.0)
+            client_ai = anthropic.Anthropic(timeout=120.0)
             gen_resp = client_ai.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=4000,
@@ -3760,7 +3811,7 @@ def legalmail_analisar_todos_pendentes():
 
         # Analyze with Claude
         try:
-            client_ai = anthropic.Anthropic(timeout=30.0)
+            client_ai = anthropic.Anthropic(timeout=120.0)
             analysis_prompt = f"""Analise esta intimação processual e responda APENAS com JSON:
 
 Processo: {notif.get('numero_processo', '')}
@@ -3841,7 +3892,7 @@ def legalmail_analisar_consolidado():
     if not groups:
         return jsonify({"status": "ok", "message": "Nenhum processo para analisar", "results": []})
 
-    client_ai = anthropic.Anthropic(timeout=30.0)
+    client_ai = anthropic.Anthropic(timeout=120.0)
     results = []
 
     for numero, group in groups.items():
@@ -4077,7 +4128,7 @@ def legalmail_regenerar_peticao():
 
     tipo_peticao = analysis_anterior.get("tipo_peticao_sugerida", "manifestação") if analysis_anterior else "manifestação"
 
-    client_ai = anthropic.Anthropic(timeout=30.0)
+    client_ai = anthropic.Anthropic(timeout=120.0)
     prompt = f"""Você é um especialista PhD em Direito Processual do escritório do Dr. José Roberto da Costa Junior (OAB/SP 378.163).
 
 Gere uma peça processual do tipo "{tipo_peticao}" para o processo abaixo. O texto deve ser COMPLETO, formal, técnico e pronto para protocolar.
@@ -4356,8 +4407,8 @@ def _save_sessions():
                     del s[key]
             serializable[phone] = s
         _safe_json_save(_SESSIONS_FILE, serializable, lock=_sessions_file_lock)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] Falha ao salvar sessões: {e}")
 
 def _load_sessions():
     """Load sessions from disk."""
@@ -5586,8 +5637,24 @@ def whatsapp_processar_mensagem(phone, message):
     # Check if Ana is paused for this phone (human takeover)
     phone_clean = re.sub(r'[^\d]', '', str(phone))
     if phone_clean in _paused_phones:
-        print(f"[BOT] Ana pausada para {phone_clean} - atendimento humano")
-        return None
+        # Auto-expire pause after 24 hours
+        try:
+            paused_at = _paused_phones[phone_clean]
+            from datetime import datetime as _dt_check, timedelta as _td_check
+            if isinstance(paused_at, str):
+                paused_time = _dt_check.fromisoformat(paused_at.replace('Z', '+00:00')) if 'T' in paused_at else _dt_check.strptime(paused_at, '%Y-%m-%d %H:%M:%S.%f')
+                if (_dt_check.now() - paused_time) > _td_check(hours=24):
+                    _paused_phones.pop(phone_clean, None)
+                    print(f"[BOT] Pausa expirada (24h) para {phone_clean} - Ana retomando")
+                else:
+                    print(f"[BOT] Ana pausada para {phone_clean} - atendimento humano")
+                    return None
+            else:
+                print(f"[BOT] Ana pausada para {phone_clean} - atendimento humano")
+                return None
+        except Exception:
+            print(f"[BOT] Ana pausada para {phone_clean} - atendimento humano")
+            return None
 
     # Check business hours
     if not _is_horario_comercial():
@@ -6030,8 +6097,9 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
         return f"{_get_saudacao()}! Desculpe, estou com uma dificuldade técnica no momento. Por favor, tente novamente em alguns minutos ou entre em contato diretamente com o escritório."
 
 
-_webhook_log = []  # Store last 20 webhook payloads for debugging
-_bot_debug_log = []  # Store last 20 bot processing logs
+from collections import deque as _deque
+_webhook_log = _deque(maxlen=20)  # Thread-safe, auto-trimmed
+_bot_debug_log = _deque(maxlen=20)
 
 
 # ========== FOLLOW-UP ENDPOINTS ==========
@@ -6417,8 +6485,7 @@ def whatsapp_webhook():
     # Store for debug (limit stored data size)
     import datetime as _dtlog
     _webhook_log.append({"ts": str(_dtlog.datetime.now()), "ip": ip, "data": data})
-    if len(_webhook_log) > 20:
-        _webhook_log.pop(0)
+    # deque(maxlen=20) auto-trims
 
     # Log webhook (truncate to avoid PII leaking in logs)
     import json as _json
@@ -6745,8 +6812,7 @@ def whatsapp_webhook():
             finally:
                 phone_lock.release()  # Always release lock
             _bot_debug_log.append(log_entry)
-            if len(_bot_debug_log) > 20:
-                _bot_debug_log.pop(0)
+            # deque(maxlen=20) auto-trims
 
         threading.Thread(target=_process, daemon=True).start()
     elif phone and not message:
@@ -6832,7 +6898,7 @@ def whatsapp_webhook():
 
                     # Analyze with Claude Vision (fallback: generic ack)
                     try:
-                        client_ai = anthropic.Anthropic(timeout=30.0)
+                        client_ai = anthropic.Anthropic(timeout=120.0)
                     except Exception:
                         client_ai = None
 
@@ -7247,7 +7313,9 @@ def _followup_timer_loop():
 
     while True:
         try:
-            agora = _dt_followup.datetime.now()
+            # Use Brazil timezone (UTC-3) for hour checks
+            _br_tz = _dt_followup.timezone(_dt_followup.timedelta(hours=-3))
+            agora = _dt_followup.datetime.now(_br_tz)
             hoje_str = agora.date().isoformat()
             hora = agora.hour
 
@@ -7343,7 +7411,7 @@ def _maternidade_generate_engagement(entry, tipo="engajamento"):
                         meses_rest = f"faltam {dias} dias"
                 except Exception:
                     pass
-            client_ai = anthropic.Anthropic(timeout=30.0)
+            client_ai = anthropic.Anthropic(timeout=120.0)
             response = client_ai.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=200,
@@ -7378,7 +7446,7 @@ Escreva APENAS a mensagem.""",
             return f"Oi {primeiro_nome}! Como está o bebê? Quando puder, me envia a certidão de nascimento pra gente dar entrada no seu salário maternidade!"
 
         # Engagement during pregnancy
-        client_ai = anthropic.Anthropic(timeout=30.0)
+        client_ai = anthropic.Anthropic(timeout=120.0)
 
         meses_restantes = ""
         if data_parto:
@@ -7723,7 +7791,8 @@ def _maternidade_timer_loop():
 
     while True:
         try:
-            agora = _dt_followup.datetime.now()
+            _br_tz = _dt_followup.timezone(_dt_followup.timedelta(hours=-3))
+            agora = _dt_followup.datetime.now(_br_tz)
             hoje_str = agora.date().isoformat()
             hora = agora.hour
 
