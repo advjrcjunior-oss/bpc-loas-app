@@ -1809,6 +1809,33 @@ def detect_uf_from_folder(pasta):
                     return uf
     return None
 
+def detect_cidade_from_folder(pasta):
+    """Detect client's city from address documents via OCR."""
+    import re as _re
+    files = sorted(os.listdir(pasta))
+    for f in files:
+        fl = f.lower()
+        if '7- comprovante de residencia' in fl or '8- cadunico' in fl:
+            text = mistral_ocr(os.path.join(pasta, f))
+            if not text:
+                continue
+            # Pattern: CIDADE/UF or CIDADE - UF or CIDADE-UF
+            ufs = ['SP', 'RJ', 'MG', 'PR', 'SC', 'RS', 'GO', 'MT', 'MS', 'BA', 'PE',
+                   'CE', 'PA', 'AM', 'MA', 'PI', 'RN', 'PB', 'SE', 'AL', 'TO', 'RO',
+                   'AC', 'AP', 'RR', 'ES', 'DF']
+            for uf in ufs:
+                # Match: "Cidade/UF" or "Cidade - UF" or "Cidade-UF"
+                m = _re.search(rf'([A-ZÀ-Ú][a-zà-ú]+(?:\s+[a-zà-ú]+)*(?:\s+[A-ZÀ-Ú][a-zà-ú]+)*)\s*[-/]\s*{uf}\b', text)
+                if m:
+                    cidade = m.group(1).strip()
+                    if len(cidade) > 2:
+                        return cidade
+            # Try CEP-based: "XXXXX-XXX Cidade UF"
+            m = _re.search(r'\d{5}-?\d{3}\s+([A-ZÀ-Ú][a-zà-ú]+(?:\s+[a-zà-ú]+)*(?:\s+[A-ZÀ-Ú][a-zà-ú]+)*)', text)
+            if m:
+                return m.group(1).strip()
+    return None
+
 def get_tribunal_config(uf):
     """Get tribunal config from UF. Returns dict with trf, sistema, uf_tribunal."""
     return UF_TRIBUNAL_MAP.get(uf, {'trf': 'TRF-3', 'sistema': 'pje', 'uf_tribunal': uf or 'SP'})
@@ -2056,7 +2083,11 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
     is_eproc = 'eproc' in sistema.lower() if sistema else False
 
     # === Step 1: Query competencia (specialties) ===
+    # Try standard endpoint first, then alternative endpoint for eProc
     specialties = safe_get(f"/petition/specialties?idpeticoes={idpeticoes}", 'specialties')
+    if not specialties:
+        # Alternative endpoint mentioned in API error messages
+        specialties = safe_get(f"/complaintsandpleadings/specialties?idpeticoes={idpeticoes}", 'specialties (alt)')
     if specialties:
         names = [s.get('nome', '') for s in specialties]
         print(f"  [LEGALMAIL] Competencias: {names[:5]}")
@@ -2065,11 +2096,22 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
         if comp:
             resolved['competencia'] = comp
             print(f"  [LEGALMAIL] -> competencia: {comp}")
-        # Send competencia first to unlock dependent fields
-        if resolved:
-            r = legalmail_request("put", f"/petition/initial?idpeticoes={idpeticoes}", json=resolved)
-            print(f"  [LEGALMAIL] PUT competencia: {r.status_code}")
-            time.sleep(2)
+    else:
+        # Fallback: set competencia directly for eProc systems
+        if is_eproc:
+            resolved['competencia'] = 'Federal'
+            print(f"  [LEGALMAIL] -> competencia (default eProc): Federal")
+        else:
+            resolved['competencia'] = 'DIREITO PREVIDENCIÁRIO'
+            print(f"  [LEGALMAIL] -> competencia (default PJe): DIREITO PREVIDENCIARIO")
+
+    # Send competencia first to unlock dependent fields
+    if resolved:
+        r = legalmail_request("put", f"/petition/initial?idpeticoes={idpeticoes}", json=resolved)
+        print(f"  [LEGALMAIL] PUT competencia: {r.status_code}")
+        if r.status_code != 200:
+            print(f"  [LEGALMAIL] PUT competencia response: {r.text[:200]}")
+        time.sleep(2)
 
     # === Step 2: Query comarca (CORRECT endpoint: /petition/county) ===
     if comarca_name:
