@@ -43,7 +43,7 @@ import openpyxl
 
 
 # ==================== AI FALLBACK SYSTEM ====================
-# Tries: Anthropic (Haiku/Sonnet) → Z.AI GLM → Google Gemini
+# Tries: Anthropic (Haiku/Sonnet) -> Z.AI GLM -> Google Gemini
 # Ensures Ana NEVER stops responding even if Anthropic is down
 
 _GLM_API_KEY = os.environ.get("GLM_API_KEY", "")
@@ -96,7 +96,7 @@ def _call_gemini(messages, system=None, max_tokens=1500):
 def ai_chat(messages, system=None, model="claude-haiku-4-5-20251001", max_tokens=1500, api_key=None):
     """
     Universal AI call with automatic fallback.
-    Tries: Anthropic → Z.AI GLM → Google Gemini
+    Tries: Anthropic -> Z.AI GLM -> Google Gemini
     """
     import logging
     logger = logging.getLogger("ai_fallback")
@@ -272,50 +272,31 @@ def build_exec_globals():
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
-    # Restricted builtins — block dangerous functions
-    _safe_builtins = {
-        k: v for k, v in __builtins__.__dict__.items()
-        if k in {
-            'print', 'len', 'range', 'int', 'str', 'float', 'bool', 'list', 'dict',
-            'tuple', 'set', 'frozenset', 'enumerate', 'zip', 'sorted', 'reversed',
-            'min', 'max', 'sum', 'round', 'abs', 'isinstance', 'type', 'hasattr',
-            'getattr', 'setattr', 'True', 'False', 'None', 'map', 'filter', 'any',
-            'all', 'ValueError', 'TypeError', 'KeyError', 'IndexError', 'Exception',
-            'StopIteration', 'format', 'repr', 'chr', 'ord', 'hex', 'bin', 'oct',
-            'divmod', 'pow', 'iter', 'next', 'super', 'property', 'staticmethod',
-            'classmethod', 'object',
-        }
-    } if hasattr(__builtins__, '__dict__') else {
-        k: __builtins__[k] for k in __builtins__
-        if k in {
-            'print', 'len', 'range', 'int', 'str', 'float', 'bool', 'list', 'dict',
-            'tuple', 'set', 'frozenset', 'enumerate', 'zip', 'sorted', 'reversed',
-            'min', 'max', 'sum', 'round', 'abs', 'isinstance', 'type',
-            'True', 'False', 'None', 'map', 'filter', 'any', 'all',
-            'ValueError', 'TypeError', 'KeyError', 'IndexError', 'Exception',
-        }
+    # Restricted __import__ — only allow safe modules
+    _ALLOWED_MODULES = {
+        'datetime', 'decimal', 'math', 'string', 're', 'json', 'os', 'os.path',
+        'collections', 'itertools', 'functools', 'textwrap', 'copy',
+        'calendar', '_strptime', 'locale', 'time',
+        'dateutil', 'dateutil.relativedelta', 'dateutil.parser',
+        'openpyxl', 'openpyxl.styles', 'openpyxl.utils',
     }
+    _original_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
 
-    # Restricted os — only allow path operations within OUTPUT_DIR
-    class _SafeOS:
-        path = os.path
-        listdir = staticmethod(os.listdir)
-        makedirs = staticmethod(os.makedirs)
-        remove = staticmethod(os.remove)
-        rename = staticmethod(os.rename)
-        sep = os.sep
-        linesep = os.linesep
+    def _safe_import(name, *args, **kwargs):
+        if name.split('.')[0] not in _ALLOWED_MODULES and name not in _ALLOWED_MODULES:
+            raise ImportError(f"Import bloqueado por segurança: {name}")
+        return _original_import(name, *args, **kwargs)
 
     g = {
-        "__builtins__": _safe_builtins,
+        "__builtins__": {**(__builtins__.__dict__ if hasattr(__builtins__, '__dict__') else __builtins__), "__import__": _safe_import},
         # Paths
         "TIMBRADO_PATH": TIMBRADO_PATH,
         "OUTPUT_DIR": OUTPUT_DIR,
-        # Standard modules (restricted)
-        "os": _SafeOS(),
+        # Standard modules
+        "os": os,
         "re": re,
         "json": json,
-        "shutil": None,  # blocked — use helpers instead
+        "shutil": shutil,
         "zipfile": zipfile,
         "datetime": dt_module.datetime,  # expose datetime.datetime as "datetime" so datetime.now() works
         "date": dt_module.date,
@@ -513,7 +494,7 @@ Gere um UNICO bloco de codigo Python. NAO gere outros documentos.
 @require_admin
 def lote():
     """Process multiple client folders end-to-end.
-    For each folder: analyze docs → extract data → generate all documents → copy to folder.
+    For each folder: analyze docs -> extract data -> generate all documents -> copy to folder.
     Returns results via streaming SSE so frontend can show progress.
     """
     from flask import Response, stream_with_context
@@ -638,7 +619,7 @@ def mistral_ocr(file_path):
 
         text = "\n\n".join(p.markdown for p in result.pages if p.markdown)
         if len(text.strip()) > 20:
-            print(f"  [OCR OK] {filename} → {len(text)} chars")
+            print(f"  [OCR OK] {filename} -> {len(text)} chars")
             return text.strip()
     except Exception as e:
         print(f"  [OCR FAIL] {os.path.basename(file_path)}: {e}")
@@ -1747,7 +1728,7 @@ BPC_DEFAULTS = {
 # Legacy constant kept for reference
 LEGALMAIL_ASSUNTO_BPC_PJE = "DIREITO ADMINISTRATIVO E OUTRAS MATÉRIAS DE DIREITO PÚBLICO (9985) | Garantias Constitucionais (9986) | Assistência Social (11847)"
 
-# ==================== UF → TRIBUNAL MAPPING ====================
+# ==================== UF -> TRIBUNAL MAPPING ====================
 # Maps Brazilian state to correct TRF, sistema, and default comarca
 UF_TRIBUNAL_MAP = {
     # TRF-1 (DF, GO, MG, BA, PI, MA, PA, AM, AC, AP, RR, RO, TO, MT)
@@ -2083,7 +2064,7 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
             ['DIREITO PREVIDENCIÁRIO', 'PREVIDENCIÁRIO', 'CÍVEL', 'FEDERAL', 'JEF CÍVEL'])
         if comp:
             resolved['competencia'] = comp
-            print(f"  [LEGALMAIL] → competencia: {comp}")
+            print(f"  [LEGALMAIL] -> competencia: {comp}")
         # Send competencia first to unlock dependent fields
         if resolved:
             r = legalmail_request("put", f"/petition/initial?idpeticoes={idpeticoes}", json=resolved)
@@ -2103,12 +2084,12 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
                 match = [c for c in comarcas if city.upper() in c.get('nome', '').upper()]
             if match:
                 resolved['comarca'] = match[0]['nome']
-                print(f"  [LEGALMAIL] → comarca: {match[0]['nome']}")
+                print(f"  [LEGALMAIL] -> comarca: {match[0]['nome']}")
             else:
                 print(f"  [WARN] Comarca '{comarca_name}' nao encontrada. Opcoes: {comarca_names[:5]}")
                 if comarcas:
                     resolved['comarca'] = comarcas[0]['nome']
-                    print(f"  [LEGALMAIL] → comarca (fallback): {comarcas[0]['nome']}")
+                    print(f"  [LEGALMAIL] -> comarca (fallback): {comarcas[0]['nome']}")
         else:
             resolved['comarca'] = comarca_name
         # Send accumulated fields to unlock next dependencies
@@ -2125,7 +2106,7 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
             ['JUIZADO ESPECIAL FEDERAL', 'JUIZADO ESPECIAL', 'ORDINÁRIO', 'COMUM'])
         if rito:
             resolved['rito'] = rito
-            print(f"  [LEGALMAIL] → rito: {rito}")
+            print(f"  [LEGALMAIL] -> rito: {rito}")
 
     # === Step 4: Query classe ===
     classes = safe_get(f"/petition/classes?idpeticoes={idpeticoes}", 'classes')
@@ -2136,7 +2117,7 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
             ['JUIZADO ESPECIAL', 'PROCEDIMENTO COMUM', 'PROCEDIMENTO DO JUIZADO'])
         if classe:
             resolved['classe'] = classe
-            print(f"  [LEGALMAIL] → classe: {classe}")
+            print(f"  [LEGALMAIL] -> classe: {classe}")
 
     # === Step 5: Query assunto (BPC: NUNCA usar benefício previdenciário por incapacidade) ===
     subjects = safe_get(f"/petition/subjects?idpeticoes={idpeticoes}", 'subjects')
@@ -2162,7 +2143,7 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
                     assunto = nome; break
         if assunto:
             resolved['assunto'] = assunto
-            print(f"  [LEGALMAIL] → assunto: {assunto[:60]}")
+            print(f"  [LEGALMAIL] -> assunto: {assunto[:60]}")
 
     # === Step 6: Query areas (for PJe) ===
     if not is_eproc:
@@ -3954,12 +3935,12 @@ Tabela de referência:
 Em caso de dúvida, adotar o MENOR prazo cabível e alertar.
 
 ### PASSO 3 — IDENTIFICAR A PEÇA ADEQUADA
-DESPACHO/INTIMAÇÃO → Petição de Juntada | Petição Intermediária | Resposta a Diligência
-DECISÃO INTERLOCUTÓRIA DESFAVORÁVEL → Agravo de Instrumento
-SENTENÇA → Recurso Ordinário (Trabalhista) | Apelação (Cível/Previdenciário)
-ACÓRDÃO → Embargos de Declaração | Recurso de Revista | Recurso Especial | Agravo Interno
-LAUDO PERICIAL → Manifestação/Impugnação ao Laudo | Quesitos Complementares
-FASE DE EXECUÇÃO → Impugnação à Penhora | Embargos à Execução | Petição de Cálculos
+DESPACHO/INTIMAÇÃO -> Petição de Juntada | Petição Intermediária | Resposta a Diligência
+DECISÃO INTERLOCUTÓRIA DESFAVORÁVEL -> Agravo de Instrumento
+SENTENÇA -> Recurso Ordinário (Trabalhista) | Apelação (Cível/Previdenciário)
+ACÓRDÃO -> Embargos de Declaração | Recurso de Revista | Recurso Especial | Agravo Interno
+LAUDO PERICIAL -> Manifestação/Impugnação ao Laudo | Quesitos Complementares
+FASE DE EXECUÇÃO -> Impugnação à Penhora | Embargos à Execução | Petição de Cálculos
 
 ### PASSO 4 — SE PRECISA PETIÇÃO, REDIGIR COMPLETA
 Estrutura obrigatória da peça:
@@ -4749,24 +4730,24 @@ Quando o cliente enviar a primeira mensagem:
 
 Aguarda resposta do cliente.
 
-Se bem → "Que bom! Em que posso te ajudar?"
-Se o cliente perguntar como a Ana está → "Ótimo, obrigada! Em que posso te ajudar?"
-Se mal ou ansioso → "Sinto muito. Entendo que esse período de espera é difícil. Pode contar comigo. Em que posso te ajudar?"
+Se bem -> "Que bom! Em que posso te ajudar?"
+Se o cliente perguntar como a Ana está -> "Ótimo, obrigada! Em que posso te ajudar?"
+Se mal ou ansioso -> "Sinto muito. Entendo que esse período de espera é difícil. Pode contar comigo. Em que posso te ajudar?"
 
 PASSO 2 — Identificação
 
 REGRA IMPORTANTE: Se o cliente JÁ indicou o tipo de caso (benefício, INSS, trabalhista, BPC, LOAS, aposentadoria, filho, etc.) NÃO repita a pergunta. Vá direto pedir o nome.
 
 Só pergunte o tipo se REALMENTE não ficou claro. Exemplo:
-- "quero saber do meu processo" → pode perguntar o tipo
-- "quero saber do benefício do meu filho" → JÁ SABE que é INSS e é do filho, pedir nome direto
-- "como tá o INSS?" → JÁ SABE que é INSS, pedir nome direto
-- "benefício do INSS" → JÁ SABE, pedir nome direto
+- "quero saber do meu processo" -> pode perguntar o tipo
+- "quero saber do benefício do meu filho" -> JÁ SABE que é INSS e é do filho, pedir nome direto
+- "como tá o INSS?" -> JÁ SABE que é INSS, pedir nome direto
+- "benefício do INSS" -> JÁ SABE, pedir nome direto
 
 Pedir o nome:
-- Se for para o próprio cliente → "Pode me informar o seu nome completo, por gentileza?"
-- Se for para outra pessoa → "Pode me informar o nome completo de quem fez o pedido do benefício?"
-- Se não sabe pra quem é → "Pode me informar o nome completo de quem tem o processo?"
+- Se for para o próprio cliente -> "Pode me informar o seu nome completo, por gentileza?"
+- Se for para outra pessoa -> "Pode me informar o nome completo de quem fez o pedido do benefício?"
+- Se não sabe pra quem é -> "Pode me informar o nome completo de quem tem o processo?"
 
 PASSO 3 — Aguardar nome
 
@@ -4787,30 +4768,30 @@ Usar sempre este formato (apenas aqui pode usar negrito e emojis):
 ⏳ *Próximos passos:* [o que esperar]
 
 Traduções obrigatórias:
-"Petição inicial distribuída" → "Seu processo foi aberto e registrado no sistema da Justiça Federal."
-"Designada audiência de instrução" → "Foi marcada uma audiência. Em breve o escritório vai te contatar com mais detalhes."
-"Perícia médica agendada" → "A Justiça marcou uma perícia médica para você. O escritório vai te avisar a data assim que confirmar."
-"Sentença prolatada" → "O juiz já deu a decisão no seu processo. O escritório está analisando e vai te informar o resultado."
-"Trânsito em julgado" → "O processo foi finalizado com decisão definitiva. O escritório vai entrar em contato para explicar os próximos passos."
+"Petição inicial distribuída" -> "Seu processo foi aberto e registrado no sistema da Justiça Federal."
+"Designada audiência de instrução" -> "Foi marcada uma audiência. Em breve o escritório vai te contatar com mais detalhes."
+"Perícia médica agendada" -> "A Justiça marcou uma perícia médica para você. O escritório vai te avisar a data assim que confirmar."
+"Sentença prolatada" -> "O juiz já deu a decisão no seu processo. O escritório está analisando e vai te informar o resultado."
+"Trânsito em julgado" -> "O processo foi finalizado com decisão definitiva. O escritório vai entrar em contato para explicar os próximos passos."
 
 Movimentações de segunda instância:
 "Apelação interposta", "Remetido ao Tribunal", "Concluso ao relator", "Incluído em pauta de julgamento", "Acórdão publicado"
-→ "Seu processo está na fase de recurso e aguarda julgamento pelos desembargadores. Essa etapa pode levar alguns meses, mas o escritório está acompanhando."
+-> "Seu processo está na fase de recurso e aguarda julgamento pelos desembargadores. Essa etapa pode levar alguns meses, mas o escritório está acompanhando."
 
 PASSO 5 — Encerramento
 
 Após entregar a informação principal:
 "Ficou alguma dúvida ou posso te ajudar com mais alguma coisa?"
 
-Se não → "Ótimo! Qualquer coisa é só chamar. Tenha um bom dia!" e adicione [ENCERRAR_SESSAO] no final da sua resposta.
-Se sim → responda e repita até encerrar naturalmente.
+Se não -> "Ótimo! Qualquer coisa é só chamar. Tenha um bom dia!" e adicione [ENCERRAR_SESSAO] no final da sua resposta.
+Se sim -> responda e repita até encerrar naturalmente.
 
 Quando o cliente encerrar a conversa (ex: "obrigado", "valeu", "ok", "tchau", "era só isso", "não, obrigada"), envie a despedida e adicione [ENCERRAR_SESSAO] no final.
 
 Exemplos de encerramento:
-- Cliente: "obrigada" → "De nada! Qualquer coisa é só chamar. Tenha um ótimo dia! [ENCERRAR_SESSAO]"
-- Cliente: "era só isso mesmo" → "Ótimo! Estou por aqui se precisar. Tenha um bom dia! [ENCERRAR_SESSAO]"
-- Cliente: "ok obrigado" → "Que bom que pude ajudar! Qualquer dúvida é só chamar. [ENCERRAR_SESSAO]"
+- Cliente: "obrigada" -> "De nada! Qualquer coisa é só chamar. Tenha um ótimo dia! [ENCERRAR_SESSAO]"
+- Cliente: "era só isso mesmo" -> "Ótimo! Estou por aqui se precisar. Tenha um bom dia! [ENCERRAR_SESSAO]"
+- Cliente: "ok obrigado" -> "Que bom que pude ajudar! Qualquer dúvida é só chamar. [ENCERRAR_SESSAO]"
 
 IMPORTANTE: O marcador [ENCERRAR_SESSAO] é invisível para o cliente, serve apenas como sinal interno. Só use quando o cliente CLARAMENTE encerrou a conversa.
 
@@ -5575,7 +5556,7 @@ def _build_resultado_msg(session, processo_info):
     if not dados_raw:
         return "Não consegui localizar as informações no momento. Vou encaminhar para a equipe do escritório verificar. Eles vão entrar em contato com você."
 
-    # Try AI with fallback (Anthropic → GLM → Gemini)
+    # Try AI with fallback (Anthropic -> GLM -> Gemini)
     try:
         resposta = ai_chat(
             messages=[{"role": "user", "content": f"Formate estes dados para o cliente:\n\n{dados_raw}"}],
@@ -6029,7 +6010,7 @@ PRIMEIRA MENSAGEM DA CONVERSA: {"Sim" if len(historico) <= 1 else "Não"}
         resposta_limpa = resposta.replace("[ENCERRAR_SESSAO]", "").replace("[TRANSFERIR_MICHELLE]", "").strip()
         historico.append({"role": "assistant", "content": resposta_limpa})
 
-        # Auto-detect if bot is asking for name → set aguardando_identificacao
+        # Auto-detect if bot is asking for name -> set aguardando_identificacao
         resposta_lower = resposta.lower()
         if any(kw in resposta_lower for kw in ["nome completo", "nome de quem", "me informar o nome", "qual o nome", "qual é o nome", "pode me passar o nome", "me dizer o nome"]):
             session["aguardando_identificacao"] = True
