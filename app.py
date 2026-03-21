@@ -3033,8 +3033,8 @@ MONITOR_STATE_FILE = os.path.join(DATA_DIR, "monitor_state.json")
 if USE_DB:
     import psycopg2
     import psycopg2.extras
-    print(f"[DB] DATABASE_URL encontrada, tentando conectar...")
-    print(f"[DB] URL prefix: {DATABASE_URL[:40]}...")
+    _db_display = DATABASE_URL.split("@")[1][:30] + "..." if "@" in DATABASE_URL else "***"
+    print(f"[DB] DATABASE_URL encontrada, conectando a {_db_display}")
 
     def _get_db():
         """Connect to PostgreSQL with SSL fallback."""
@@ -7108,7 +7108,8 @@ def whatsapp_webhook():
     client_sent_audio = msg_type in ("AUDIO", "VOICE", "PTT")
 
     if phone and message:
-        print(f"[WHATSAPP] De {phone}: {message[:100]} (tipo={msg_type})")
+        _pm = phone[-4:] if len(phone) > 4 else "****"
+        print(f"[WHATSAPP] De ***{_pm}: {message[:100]} (tipo={msg_type})")
 
         # Store session_id and audio preference
         if session_id:
