@@ -1195,9 +1195,15 @@ def extract_json(text):
 
 @app.route("/api/download/<path:filename>")
 def download(filename):
-    # Block path traversal attempts
-    if ".." in filename or filename.startswith("/") or filename.startswith("\\"):
+    # Block path traversal attempts (including URL-encoded variants)
+    if not filename or ".." in filename or "/" in filename or "\\" in filename:
         return jsonify({"error": "invalid filename"}), 400
+    # Verify resolved path stays inside OUTPUT_DIR
+    full_path = os.path.abspath(os.path.join(OUTPUT_DIR, filename))
+    if not full_path.startswith(os.path.abspath(OUTPUT_DIR)):
+        return jsonify({"error": "invalid path"}), 400
+    if not os.path.isfile(full_path):
+        return jsonify({"error": "file not found"}), 404
     return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 
 
@@ -3540,6 +3546,7 @@ def stop_monitor():
 
 
 @app.route("/api/legalmail/monitor/status", methods=["GET"])
+@require_admin
 def legalmail_monitor_status():
     """Get monitor status and stats."""
     try:
@@ -3565,6 +3572,7 @@ def legalmail_monitor_status():
 
 
 @app.route("/api/legalmail/monitor/start", methods=["POST"])
+@require_admin
 def legalmail_monitor_start():
     """Start background monitoring."""
     started = start_monitor()
@@ -3572,6 +3580,7 @@ def legalmail_monitor_start():
 
 
 @app.route("/api/legalmail/monitor/stop", methods=["POST"])
+@require_admin
 def legalmail_monitor_stop():
     """Stop background monitoring."""
     stop_monitor()
@@ -3579,6 +3588,7 @@ def legalmail_monitor_stop():
 
 
 @app.route("/api/legalmail/monitor/check-now", methods=["POST"])
+@require_admin
 def legalmail_monitor_check_now():
     """Run a manual check immediately (in a thread to not block).
 
@@ -3607,6 +3617,7 @@ def legalmail_monitor_check_now():
 
 
 @app.route("/api/legalmail/monitor/config", methods=["POST"])
+@require_admin
 def legalmail_monitor_config():
     """Update monitor configuration."""
     global MONITOR_INTERVAL_MINUTES
@@ -3771,6 +3782,12 @@ def legalmail_webhook_receiver():
     LegalMail sends new intimações/movimentações here automatically.
     We store them and can trigger analysis.
     """
+    # Validate webhook secret if configured
+    if WEBHOOK_SECRET:
+        incoming = request.args.get("secret", "") or request.headers.get("X-Webhook-Secret", "")
+        if not hmac.compare_digest(incoming, WEBHOOK_SECRET):
+            return jsonify({"error": "forbidden"}), 403
+
     payload = request.get_json(force=True, silent=True)
     if not payload:
         return jsonify({"status": "ignored", "reason": "empty payload"}), 200
@@ -3835,6 +3852,7 @@ def legalmail_listar_notificacoes():
 
 
 @app.route("/api/legalmail/notificacoes/importar", methods=["POST"])
+@require_admin
 def legalmail_importar_notificacoes():
     """Import notifications from JSON array (replaces existing)."""
     data = request.get_json()
@@ -3845,6 +3863,7 @@ def legalmail_importar_notificacoes():
 
 
 @app.route("/api/legalmail/notificacoes/limpar", methods=["POST"])
+@require_admin
 def legalmail_limpar_notificacoes():
     """Remove notifications older than 5 days from storage."""
     notifications = _load_notifications()
@@ -3858,6 +3877,7 @@ def legalmail_limpar_notificacoes():
 
 
 @app.route("/api/legalmail/notificacao/analisar", methods=["POST"])
+@require_admin
 def legalmail_analisar_intimacao():
     """Analyze an intimation using Claude AI.
 
