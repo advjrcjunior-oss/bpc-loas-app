@@ -2351,94 +2351,106 @@ def legalmail_request(method, endpoint, **kwargs):
 
 
 def _extract_client_data_from_folder(pasta):
-    """Extract client name, CPF, and address from documents in organized folder.
-    Uses OCR on procuracao and comprovante de residencia."""
+    """Extract client name, CPF, address from ALL documents in folder via OCR (cached)."""
     import re as _re
     data = {}
-
-    # Get client name from folder name (format: "NOME_RESPONSAVEL")
-    folder_name = os.path.basename(pasta)
-    parts = folder_name.split("_")
-    data['nome'] = parts[0].strip()
-
+    data['nome'] = os.path.basename(pasta).split("_")[0].strip()
     files = sorted(os.listdir(pasta))
 
-    # Extract CPF from procuracao or RG
+    def _find_cep(text):
+        """Extract CEP from text - handles all OCR formats: 87308475, 87.308-475, 80.215-900"""
+        patterns = [
+            r'(?:CEP|Cep|cep)[:\s]*(\d{2})\.?(\d{3})[-.]?(\d{3})',
+            r'\b(\d{2})\.(\d{3})[-.](\d{3})\b',
+            r'(?:CEP|Cep|cep)[:\s]*(\d{5})[-.]?(\d{3})',
+            r'\b(\d{5})[-](\d{3})\b',
+        ]
+        for p in patterns:
+            m = _re.search(p, text)
+            if m:
+                digits = _re.sub(r'[^\d]', '', m.group(0))
+                # Extract only last 8 digits (CEP)
+                cep_m = _re.search(r'(\d{8})', digits)
+                if cep_m:
+                    cep = cep_m.group(1)
+                    if cep != '00000000':
+                        return f"{cep[:5]}-{cep[5:]}"
+        return None
+
+    # === Search all relevant docs for CPF, CEP, address ===
+    search_order = []
     for f in files:
         fl = f.lower()
-        if '2- procuracao' in fl or 'procura' in fl:
-            text = mistral_ocr(os.path.join(pasta, f))
-            if not text:
-                continue
-            # Search CPF pattern
-            cpf_match = _re.search(r'\b(\d{3}[.\s]?\d{3}[.\s]?\d{3}[-.\s]?\d{2})\b', text)
-            if cpf_match:
-                cpf = cpf_match.group(1)
-                cpf_clean = _re.sub(r'[^\d]', '', cpf)
+        if '8- cad' in fl or 'cadunico' in fl: search_order.insert(0, f)  # CadUnico first (best structured)
+        elif '2- procura' in fl or 'procura' in fl: search_order.append(f)
+        elif '7- comprov' in fl or 'residen' in fl: search_order.append(f)
+        elif '5- ' in fl or '6- ' in fl or 'rg' in fl or 'identif' in fl: search_order.append(f)
+
+    for f in search_order:
+        path = os.path.join(pasta, f)
+        if not os.path.isfile(path) or not path.lower().endswith('.pdf'):
+            continue
+        text = mistral_ocr(path)
+        if not text:
+            continue
+
+        # CPF
+        if not data.get('documento'):
+            cpf_m = _re.search(r'(?:CPF|cpf)[:\s]*[n°]*\s*(\d{3}[.\s]?\d{3}[.\s]?\d{3}[-.\s]?\d{2})', text)
+            if not cpf_m:
+                cpf_m = _re.search(r'\b(\d{3}\.\d{3}\.\d{3}-\d{2})\b', text)
+            if cpf_m:
+                cpf_clean = _re.sub(r'[^\d]', '', cpf_m.group(1))
                 if len(cpf_clean) == 11:
                     data['documento'] = f"{cpf_clean[:3]}.{cpf_clean[3:6]}.{cpf_clean[6:9]}-{cpf_clean[9:]}"
-                    break
+                    print(f"  [EXTRACT] CPF em {f}: {data['documento']}")
 
-    # If no CPF from procuracao, try RG/ID docs
-    if not data.get('documento'):
-        for f in files:
-            fl = f.lower()
-            if '5- ' in fl or '6- ' in fl or 'identifica' in fl or 'rg' in fl:
-                text = mistral_ocr(os.path.join(pasta, f))
-                if not text:
-                    continue
-                cpf_match = _re.search(r'\b(\d{3}[.\s]?\d{3}[.\s]?\d{3}[-.\s]?\d{2})\b', text)
-                if cpf_match:
-                    cpf = cpf_match.group(1)
-                    cpf_clean = _re.sub(r'[^\d]', '', cpf)
-                    if len(cpf_clean) == 11:
-                        data['documento'] = f"{cpf_clean[:3]}.{cpf_clean[3:6]}.{cpf_clean[6:9]}-{cpf_clean[9:]}"
+        # CEP
+        if not data.get('endereco_cep'):
+            cep = _find_cep(text)
+            if cep:
+                data['endereco_cep'] = cep
+                print(f"  [EXTRACT] CEP em {f}: {cep}")
+
+        # Cidade/UF
+        if not data.get('endereco_cidade'):
+            for uf in ['SP','RJ','MG','PR','SC','RS','GO','MT','MS','BA','PE','CE','PA','AM','MA','PI','RN','PB','SE','AL','TO','RO','AC','AP','RR','ES','DF']:
+                m = _re.search(rf'([A-ZÀ-Úa-zà-ú]{{3,}}(?:\s+[A-Za-zÀ-ú]+)*)\s*[-/]\s*{uf}\b', text)
+                if m:
+                    cidade = m.group(1).strip()
+                    if cidade.upper() not in ('CEP', 'RUA', 'AV', 'LOCAL', 'CNPJ'):
+                        data['endereco_cidade'] = cidade
+                        data['endereco_uf'] = uf
+                        print(f"  [EXTRACT] Cidade em {f}: {cidade}/{uf}")
                         break
 
-    # Extract address from comprovante de residencia
-    for f in files:
-        fl = f.lower()
-        if '7- comprovante' in fl:
-            text = mistral_ocr(os.path.join(pasta, f))
-            if not text:
-                continue
-            # Try to extract CEP (various formats from OCR)
-            cep_match = _re.search(r'(?:CEP|cep|Cep)[:\s]*(\d{5})[.-]?(\d{3})', text)
-            if not cep_match:
-                cep_match = _re.search(r'\b(\d{5})[.-](\d{3})\b', text)
-            if cep_match:
-                data['endereco_cep'] = f"{cep_match.group(1)}-{cep_match.group(2)}"
-            # Extract city/UF
-            for uf in ['SP','RJ','MG','PR','SC','RS','GO','MT','MS','BA','PE','CE','PA','AM','MA','PI','RN','PB','SE','AL','TO','RO','AC','AP','RR','ES','DF']:
-                city_match = _re.search(rf'([A-Za-zÀ-ú][\w\s]+)\s*[-/]\s*{uf}\b', text)
-                if city_match:
-                    data['endereco_cidade'] = city_match.group(1).strip()
-                    data['endereco_uf'] = uf
-                    break
+        # Logradouro
+        if not data.get('endereco_logradouro'):
+            m = _re.search(r'(?:Endere[çc]o|Rua|Av\.|Avenida|Travessa)[:\s]*([^\n,]{5,60})', text, _re.IGNORECASE)
+            if m:
+                logr = m.group(1).strip()
+                num_m = _re.search(r'n[°º]?\s*(\d+)', logr, _re.IGNORECASE)
+                if num_m:
+                    data['endereco_numero'] = num_m.group(1)
+                data['endereco_logradouro'] = _re.sub(r'\s*n[°º]?\s*\d+', '', logr).strip()
+
+        # Stop early if we have everything
+        if all(data.get(k) for k in ['documento', 'endereco_cep', 'endereco_cidade']):
             break
 
-    # Ensure required fields for LegalMail party creation
+    # Defaults for missing fields
     if data.get('documento'):
         if not data.get('endereco_cep'):
-            # CEP genérico por UF (primeiro CEP do range da capital)
-            _cep_por_uf = {'SP':'01000-000','RJ':'20000-000','MG':'30000-000','PR':'80000-000',
-                           'SC':'88000-000','RS':'90000-000','BA':'40000-000','PE':'50000-000',
-                           'CE':'60000-000','PA':'66000-000','GO':'74000-000','DF':'70000-000',
-                           'AM':'69000-000','MA':'65000-000','ES':'29000-000','MT':'78000-000',
-                           'MS':'79000-000','PI':'64000-000','RN':'59000-000','PB':'58000-000',
-                           'SE':'49000-000','AL':'57000-000','TO':'77000-000','RO':'76800-000',
-                           'AC':'69900-000','AP':'68900-000','RR':'69300-000'}
-            data['endereco_cep'] = _cep_por_uf.get(data.get('endereco_uf', ''), '01000-000')
-        if not data.get('endereco_logradouro'):
-            data['endereco_logradouro'] = 'A informar'
-        if not data.get('endereco_numero'):
-            data['endereco_numero'] = 'S/N'
-        if not data.get('endereco_bairro'):
-            data['endereco_bairro'] = 'A informar'
-        if not data.get('endereco_cidade'):
-            data['endereco_cidade'] = 'A informar'
-        if not data.get('endereco_uf'):
-            data['endereco_uf'] = 'SP'
+            _cep_uf = {'SP':'01000-000','RJ':'20000-000','MG':'30000-000','PR':'80000-000',
+                       'SC':'88000-000','RS':'90000-000','BA':'40000-000','PE':'50000-000',
+                       'CE':'60000-000','GO':'74000-000','DF':'70000-000','AM':'69000-000',
+                       'MA':'65000-000','ES':'29000-000','MT':'78000-000','MS':'79000-000'}
+            data['endereco_cep'] = _cep_uf.get(data.get('endereco_uf', ''), '01000-000')
+        data.setdefault('endereco_logradouro', 'A informar')
+        data.setdefault('endereco_numero', 'S/N')
+        data.setdefault('endereco_bairro', 'A informar')
+        data.setdefault('endereco_cidade', 'A informar')
+        data.setdefault('endereco_uf', 'SP')
         return data
     return None
 
