@@ -2394,8 +2394,8 @@ def _extract_client_data_from_folder(pasta):
         if not text:
             continue
 
-        # CPF
-        if not data.get('documento'):
+        # CPF — prefer CPF near client name, skip CadUnico (has multiple CPFs)
+        if not data.get('documento') and 'cadunico' not in f.lower() and 'cad' not in f.lower():
             cpf_m = _re.search(r'(?:CPF|cpf)[:\s]*[n°]*\s*(\d{3}[.\s]?\d{3}[.\s]?\d{3}[-.\s]?\d{2})', text)
             if not cpf_m:
                 cpf_m = _re.search(r'\b(\d{3}\.\d{3}\.\d{3}-\d{2})\b', text)
@@ -2418,7 +2418,9 @@ def _extract_client_data_from_folder(pasta):
                 m = _re.search(rf'([A-ZÀ-Úa-zà-ú]{{3,}}(?:\s+[A-Za-zÀ-ú]+)*)\s*[-/]\s*{uf}\b', text)
                 if m:
                     cidade = m.group(1).strip()
-                    if cidade.upper() not in ('CEP', 'RUA', 'AV', 'LOCAL', 'CNPJ'):
+                    # Filter out false positives
+                    bad = ('CEP', 'RUA', 'AV', 'LOCAL', 'CNPJ', 'OAB', 'INSCRIT', 'FONE', 'FAX', 'EMAIL', 'HTTP', 'WWW')
+                    if cidade.upper() not in bad and not any(b in cidade.upper() for b in bad) and len(cidade) < 30:
                         data['endereco_cidade'] = cidade
                         data['endereco_uf'] = uf
                         print(f"  [EXTRACT] Cidade em {f}: {cidade}/{uf}")
