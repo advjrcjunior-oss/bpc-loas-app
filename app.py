@@ -484,10 +484,11 @@ Gere um UNICO bloco de codigo Python. NAO gere outros documentos.
         return jsonify(result)
 
     except anthropic.APIError as e:
-        return jsonify({"error": f"Erro na API do Claude: {str(e)}"}), 500
+        print(f"[AI] API Error: {e}")
+        return jsonify({"error": "Erro ao processar com IA. Tente novamente."}), 500
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": f"Erro: {str(e)}"}), 500
+        return jsonify({"error": "Erro interno ao gerar documentos."}), 500
 
 
 @app.route("/api/lote", methods=["POST"])
@@ -1059,10 +1060,11 @@ def analisar_pasta():
         })
 
     except anthropic.APIError as e:
-        return jsonify({"error": f"Erro na API do Claude: {str(e)}"}), 500
+        print(f"[AI] API Error na analise: {e}")
+        return jsonify({"error": "Erro ao processar com IA. Tente novamente."}), 500
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": f"Erro: {str(e)}"}), 500
+        return jsonify({"error": "Erro interno ao analisar documentos."}), 500
 
 
 # Extraction prompt constant
@@ -2948,9 +2950,10 @@ def legalmail_comarcas():
 
 
 @app.route("/api/legalmail/rascunho", methods=["POST"])
+@require_admin
 def legalmail_rascunho():
     """Create a draft petition on LegalMail for a client folder."""
-    data = request.get_json()
+    data = request.get_json() or {}
     pasta = data.get("pasta", "").strip()
     tribunal = data.get("tribunal", "TRF-4").strip()
     sistema = data.get("sistema", "eproc_jfpr").strip()
@@ -2971,6 +2974,7 @@ def legalmail_rascunho():
 
 
 @app.route("/api/legalmail/rascunho-lote", methods=["POST"])
+@require_admin
 def legalmail_rascunho_lote():
     """Create draft petitions for multiple client folders."""
     from flask import Response, stream_with_context
@@ -3727,6 +3731,7 @@ def legalmail_movimentacao_url():
 
 
 @app.route("/api/legalmail/importar", methods=["POST"])
+@require_admin
 def legalmail_importar_processo():
     """Import processes for monitoring.
 
@@ -3789,6 +3794,7 @@ def legalmail_importar_sistemas():
 
 
 @app.route("/api/legalmail/webhook/configurar", methods=["POST"])
+@require_admin
 def legalmail_configurar_webhook():
     """Register webhook endpoint for notifications.
 
