@@ -1049,7 +1049,8 @@ def analisar_pasta():
         # Parse JSON response
         extracted = extract_json(response_text)
         if not extracted:
-            return jsonify({"error": "Nao foi possivel extrair dados. Resposta:\n" + response_text[:2000]}), 400
+            print(f"[DEBUG] Claude response nao parseavel: {response_text[:500]}")
+            return jsonify({"error": "Nao foi possivel extrair dados dos documentos. Tente novamente."}), 400
 
         return jsonify({
             "data": extracted,
