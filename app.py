@@ -2191,6 +2191,14 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
             print(f"  [LEGALMAIL] -> classe: {classe}")
             do_put({'classe': classe}, 'classe')
             time.sleep(2)
+    else:
+        # eProc TRF-4: classes endpoint often returns empty - try default values
+        for default_classe in ['JUIZADO ESPECIAL FEDERAL', 'PROCEDIMENTO COMUM']:
+            r = do_put({'classe': default_classe}, f'classe ({default_classe})')
+            if r.status_code == 200:
+                resolved['classe'] = default_classe
+                break
+            time.sleep(1)
 
     # === Step 5: Query assunto and PUT (BPC: NUNCA usar benefício previdenciário por incapacidade) ===
     subjects = safe_get(f"{prefix}/subjects?idpeticoes={idpeticoes}", 'subjects')
