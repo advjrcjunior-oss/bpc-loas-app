@@ -1259,18 +1259,51 @@ DADOS DO PROCESSO:
 
 
 def sanitize_code(code):
-    """Clean up generated code to avoid common errors and block dangerous patterns."""
-    # SECURITY: Block dangerous patterns that could be injected via prompt injection
+    """Clean up generated code to avoid common errors and block dangerous patterns.
+    Uses AST validation in addition to pattern matching for robust security."""
+    import ast as _ast
+
+    # SECURITY: AST-based validation — reject code with dangerous constructs
+    try:
+        tree = _ast.parse(code)
+        _BLOCKED_FUNCS = {'eval', 'exec', 'compile', 'globals', 'locals', '__import__',
+                          'breakpoint', 'exit', 'quit', 'input'}
+        _BLOCKED_MODULES = {'subprocess', 'socket', 'urllib', 'http', 'ftplib', 'smtplib',
+                            'importlib', 'signal', 'ctypes', 'multiprocessing', 'threading'}
+        for node in _ast.walk(tree):
+            # Block dangerous function calls
+            if isinstance(node, _ast.Call):
+                if isinstance(node.func, _ast.Name) and node.func.id in _BLOCKED_FUNCS:
+                    raise ValueError(f"Blocked function call: {node.func.id}")
+                if isinstance(node.func, _ast.Attribute):
+                    full = f"{node.func.value.id}.{node.func.attr}" if isinstance(node.func.value, _ast.Name) else node.func.attr
+                    if full in ('os.system', 'os.popen', 'os.exec', 'os.execv', 'os.kill',
+                                'shutil.rmtree', 'shutil.move', 'sys.exit'):
+                        raise ValueError(f"Blocked call: {full}")
+            # Block dangerous imports
+            if isinstance(node, _ast.Import):
+                for alias in node.names:
+                    if alias.name.split('.')[0] in _BLOCKED_MODULES:
+                        raise ValueError(f"Blocked import: {alias.name}")
+            if isinstance(node, _ast.ImportFrom) and node.module:
+                if node.module.split('.')[0] in _BLOCKED_MODULES:
+                    raise ValueError(f"Blocked import from: {node.module}")
+    except SyntaxError:
+        pass  # Let the exec() handle syntax errors naturally
+    except ValueError as e:
+        # Remove all lines containing the blocked pattern
+        blocked_str = str(e).split(': ', 1)[-1] if ': ' in str(e) else str(e)
+        code = '\n'.join(line for line in code.split('\n')
+                        if blocked_str not in line)
+
+    # Pattern-based fallback for edge cases AST doesn't catch
     _DANGEROUS_PATTERNS = [
-        '__import__', 'subprocess', 'os.system', 'os.popen', 'os.exec',
-        'eval(', 'exec(', 'compile(', 'globals(', 'locals(',
-        'socket', 'urllib', 'requests.', 'httpx.', 'http.client',
-        'shutil.rmtree', 'shutil.move', 'open(', 'builtins',
-        'importlib', 'sys.exit', 'os.kill', 'signal.',
+        '__import__', 'subprocess', 'os.system', 'os.popen',
+        'eval(', 'exec(', 'compile(', 'builtins',
+        'importlib', 'sys.exit', 'os.kill',
     ]
     for pattern in _DANGEROUS_PATTERNS:
         if pattern in code:
-            # Remove the dangerous line entirely
             code = '\n'.join(line for line in code.split('\n')
                            if pattern not in line)
 
@@ -6879,7 +6912,7 @@ def whatsapp_webhook():
             print(f"[SECURITY] Webhook rejeitado - secret inválido de {request.remote_addr}")
             return jsonify({"error": "forbidden"}), 403
 
-    # Rate limit webhooks: max 120/min (prevents abuse)
+    # Rate limit webhooks: max 120/min per IP (prevents abuse)
     ip = request.remote_addr or "unknown"
     if not _rate_limit_check(f"webhook:{ip}", max_requests=120, window_seconds=60):
         return jsonify({"error": "rate limit"}), 429
@@ -6887,6 +6920,13 @@ def whatsapp_webhook():
     data = request.get_json(force=False, silent=True) or {}
     if not data:
         return jsonify({"error": "invalid payload"}), 400
+
+    # Per-phone rate limit: max 10 messages/min per phone (prevents AI abuse)
+    _phone_raw = str(data.get("content", {}).get("chatId", "") or data.get("phone", ""))
+    _phone_clean = re.sub(r'[^\d]', '', _phone_raw)
+    if _phone_clean and not _rate_limit_check(f"whatsapp_phone:{_phone_clean}", max_requests=10, window_seconds=60):
+        print(f"[SECURITY] Rate limit por telefone: {_phone_clean[-4:]}")
+        return jsonify({"status": "rate_limited"}), 200
 
     # Store for debug (limit stored data size)
     import datetime as _dtlog
