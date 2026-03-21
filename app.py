@@ -1671,6 +1671,32 @@ LEGALMAIL_DOC_TYPE_NAMES = {
     "19": "Quesitos Perícia",
     "20": "Identidade",
     "21": "Identidade",
+    "23": "Outros",
+}
+
+# Alternative search terms for each prefix (used when exact name doesn't match)
+_DOC_TYPE_SEARCH_TERMS = {
+    "2": ["procura", "mandato", "substabelec", "instrumento"],
+    "3": ["honor", "contrato"],
+    "4": ["hipossufic", "pobreza", "declara"],
+    "5": ["certid", "nascimento"],
+    "6": ["identidade", "rg", "documento", "cnh"],
+    "7": ["resid", "endereco", "comprovante"],
+    "8": ["cadastro", "cadunico", "cad", "comprovante"],
+    "9": ["identidade", "rg", "documento", "familiar"],
+    "10": ["renda", "comprovante", "extrato"],
+    "11": ["requerimento", "inss", "protocolo", "comprovante"],
+    "12": ["indeferimento", "carta", "comunica"],
+    "13": ["laudo", "medico", "atestado", "perica"],
+    "14": ["relatorio", "laudo", "medico"],
+    "15": ["receita", "prescri", "exame"],
+    "16": ["comprovante", "extrato"],
+    "17": ["planilha", "calculo", "atrasado"],
+    "18": ["quesito", "perica", "medic"],
+    "19": ["quesito", "perica", "social"],
+    "20": ["biometria", "identidade", "foto"],
+    "21": ["oab", "identidade", "carteira"],
+    "23": ["termo", "outro", "declaracao"],
 }
 
 # Cache: petition_id -> {type_name_lower: type_id}
@@ -1678,7 +1704,8 @@ _attachment_type_cache = {}
 
 
 def legalmail_resolve_doc_type(idpeticoes, prefix):
-    """Get the correct attachment type ID for a file prefix, fetching from API if needed."""
+    """Get the correct attachment type ID for a file prefix, fetching from API if needed.
+    Uses fuzzy matching with alternative search terms for PJe compatibility."""
     global _attachment_type_cache
 
     if idpeticoes not in _attachment_type_cache:
@@ -1701,34 +1728,41 @@ def legalmail_resolve_doc_type(idpeticoes, prefix):
 
     type_map = _attachment_type_cache[idpeticoes]
     target_name = LEGALMAIL_DOC_TYPE_NAMES.get(prefix, "Outros")
-    target_lower = target_name.lower()
+    target_lower = _normalize_text(target_name) if '_normalize_text' in dir() else target_name.lower()
 
-    # Exact match
-    if target_lower in type_map:
-        return type_map[target_lower]
-
-    # Partial match: target in name or name in target
+    # 1. Exact match (accent-insensitive)
     for name, tid in type_map.items():
-        if target_lower in name or name in target_lower:
+        if _normalize_text(name) == target_lower:
             return tid
 
-    # Broader fallback: match first word
-    first_word = target_lower.split()[0] if target_lower else ""
+    # 2. Partial match: target in name or name in target
     for name, tid in type_map.items():
-        if first_word and first_word in name:
+        name_n = _normalize_text(name)
+        if target_lower in name_n or name_n in target_lower:
             return tid
 
-    # Last resort: try common fallback type names, then use first available type
-    for fallback_name in ['outros', 'documento', 'documentos', 'comprovantes',
-                          'comprovante', 'anexo', 'anexos', 'petição', 'peticao']:
-        if fallback_name in type_map:
-            print(f"  [LEGALMAIL] Tipo '{target_name}' nao encontrado, usando fallback '{fallback_name}'")
-            return type_map[fallback_name]
+    # 3. Alternative search terms for this prefix
+    search_terms = _DOC_TYPE_SEARCH_TERMS.get(prefix, [])
+    for term in search_terms:
+        for name, tid in type_map.items():
+            if term in _normalize_text(name):
+                return tid
 
-    # Absolute last resort: use the first type available so no document is skipped
+    # 4. Common fallback type names
+    for fallback in ['outros', 'outro', 'documento', 'documentos', 'comprovante',
+                     'comprovantes', 'anexo', 'anexos', 'peticao', 'petição']:
+        for name, tid in type_map.items():
+            if fallback in _normalize_text(name):
+                return tid
+
+    # 5. Absolute last resort: "petição inicial" or first type
     if type_map:
+        # Prefer "petição" types
+        for name, tid in type_map.items():
+            if 'peti' in _normalize_text(name) and 'inicial' in _normalize_text(name):
+                return tid
         first_name = next(iter(type_map))
-        print(f"  [LEGALMAIL] Tipo '{target_name}' nao encontrado, usando primeiro tipo disponivel '{first_name}'")
+        print(f"  [LEGALMAIL] Tipo '{target_name}' nao encontrado, usando '{first_name}'")
         return type_map[first_name]
 
     print(f"  [WARN] Nenhum tipo de anexo disponivel para '{target_name}'")
@@ -1757,40 +1791,39 @@ LEGALMAIL_ASSUNTO_BPC_PJE = "DIREITO ADMINISTRATIVO E OUTRAS MATÉRIAS DE DIREIT
 # ==================== UF -> TRIBUNAL MAPPING ====================
 # Maps Brazilian state to correct TRF, sistema, and default comarca
 UF_TRIBUNAL_MAP = {
-    # TRF-1 (DF, GO, MG, BA, PI, MA, PA, AM, AC, AP, RR, RO, TO, MT)
-    'DF': {'trf': 'TRF-1', 'sistema': 'pje_jfdf', 'uf_tribunal': 'DF'},
-    'GO': {'trf': 'TRF-1', 'sistema': 'pje_jfgo', 'uf_tribunal': 'GO'},
-    'MG': {'trf': 'TRF-6', 'sistema': 'pje_jfmg', 'uf_tribunal': 'MG'},
-    'BA': {'trf': 'TRF-1', 'sistema': 'pje_jfba', 'uf_tribunal': 'BA'},
-    'PI': {'trf': 'TRF-1', 'sistema': 'pje_jfpi', 'uf_tribunal': 'PI'},
-    'MA': {'trf': 'TRF-1', 'sistema': 'pje_jfma', 'uf_tribunal': 'MA'},
-    'PA': {'trf': 'TRF-1', 'sistema': 'pje_jfpa', 'uf_tribunal': 'PA'},
-    'AM': {'trf': 'TRF-1', 'sistema': 'pje_jfam', 'uf_tribunal': 'AM'},
-    'AC': {'trf': 'TRF-1', 'sistema': 'pje_jfac', 'uf_tribunal': 'AC'},
-    'AP': {'trf': 'TRF-1', 'sistema': 'pje_jfap', 'uf_tribunal': 'AP'},
-    'RR': {'trf': 'TRF-1', 'sistema': 'pje_jfrr', 'uf_tribunal': 'RR'},
-    'RO': {'trf': 'TRF-1', 'sistema': 'pje_jfro', 'uf_tribunal': 'RO'},
-    'TO': {'trf': 'TRF-1', 'sistema': 'pje_jfto', 'uf_tribunal': 'TO'},
-    'MT': {'trf': 'TRF-1', 'sistema': 'pje_jfmt', 'uf_tribunal': 'MT'},
-    # TRF-2 (RJ, ES) - eProc
+    # TRF-1 (DF, GO, BA, PI, MA, PA, AM, AC, AP, RR, RO, TO, MT) - sistema: pje
+    'DF': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'DF'},
+    'GO': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'GO'},
+    'BA': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'BA'},
+    'PI': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'PI'},
+    'MA': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'MA'},
+    'PA': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'PA'},
+    'AM': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'AM'},
+    'AC': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'AC'},
+    'AP': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'AP'},
+    'RR': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'RR'},
+    'RO': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'RO'},
+    'TO': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'TO'},
+    'MT': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'MT'},
+    # TRF-2 (RJ, ES) - eProc with UF-specific sistema
     'RJ': {'trf': 'TRF-2', 'sistema': 'eproc_jfrj', 'uf_tribunal': 'RJ'},
     'ES': {'trf': 'TRF-2', 'sistema': 'eproc_jfes', 'uf_tribunal': 'ES'},
     # TRF-3 (SP, MS) - PJe
     'SP': {'trf': 'TRF-3', 'sistema': 'pje', 'uf_tribunal': 'SP'},
     'MS': {'trf': 'TRF-3', 'sistema': 'pje', 'uf_tribunal': 'MS'},
-    # TRF-4 (PR, SC, RS) - eProc
+    # TRF-4 (PR, SC, RS) - eProc with UF-specific sistema
     'PR': {'trf': 'TRF-4', 'sistema': 'eproc_jfpr', 'uf_tribunal': 'PR'},
     'SC': {'trf': 'TRF-4', 'sistema': 'eproc_jfsc', 'uf_tribunal': 'SC'},
     'RS': {'trf': 'TRF-4', 'sistema': 'eproc_jfrs', 'uf_tribunal': 'RS'},
-    # TRF-5 (PE, CE, AL, SE, RN, PB)
-    'PE': {'trf': 'TRF-5', 'sistema': 'pje_jfpe', 'uf_tribunal': 'PE'},
-    'CE': {'trf': 'TRF-5', 'sistema': 'pje_jfce', 'uf_tribunal': 'CE'},
-    'AL': {'trf': 'TRF-5', 'sistema': 'pje_jfal', 'uf_tribunal': 'AL'},
-    'SE': {'trf': 'TRF-5', 'sistema': 'pje_jfse', 'uf_tribunal': 'SE'},
-    'RN': {'trf': 'TRF-5', 'sistema': 'pje_jfrn', 'uf_tribunal': 'RN'},
-    'PB': {'trf': 'TRF-5', 'sistema': 'pje_jfpb', 'uf_tribunal': 'PB'},
-    # TRF-6 (MG only after 2022 split from TRF-1)
-    # Note: MG moved to TRF-6 but LegalMail may still use TRF-1 sistema
+    # TRF-5 (PE, CE, AL, SE, RN, PB) - sistema: pje
+    'PE': {'trf': 'TRF-5', 'sistema': 'pje', 'uf_tribunal': 'PE'},
+    'CE': {'trf': 'TRF-5', 'sistema': 'pje', 'uf_tribunal': 'CE'},
+    'AL': {'trf': 'TRF-5', 'sistema': 'pje', 'uf_tribunal': 'AL'},
+    'SE': {'trf': 'TRF-5', 'sistema': 'pje', 'uf_tribunal': 'SE'},
+    'RN': {'trf': 'TRF-5', 'sistema': 'pje', 'uf_tribunal': 'RN'},
+    'PB': {'trf': 'TRF-5', 'sistema': 'pje', 'uf_tribunal': 'PB'},
+    # TRF-6 (MG) - eProc with UF-specific sistema
+    'MG': {'trf': 'TRF-6', 'sistema': 'eproc_jfmg', 'uf_tribunal': 'MG'},
 }
 
 def detect_uf_from_folder(pasta):
@@ -1871,6 +1904,7 @@ INSS_DATA = {
     "nome": "INSTITUTO NACIONAL DO SEGURO SOCIAL - INSS",
     "polo": "passivo",
     "documento": "29.979.036/0001-40",
+    "personalidade": "Pessoa jur\u00eddica",
     "endereco_cep": "70040-902",
     "endereco_logradouro": "SAUS Quadra 2 Bloco O",
     "endereco_numero": "S/N",
@@ -2018,17 +2052,73 @@ def legalmail_get_or_create_inss():
     return None
 
 
+def _detect_genero(nome):
+    """Detect gender from Brazilian first name."""
+    if not nome:
+        return 'MASCULINO'
+    primeiro = nome.strip().split()[0].upper()
+    # Common feminine endings and names
+    fem_names = {'ALICE', 'ISABELLA', 'MARIA', 'ANA', 'JULIA', 'JULIANA', 'LUCIANA',
+                 'LUCIENE', 'LUCELIA', 'REGIANE', 'REGIALVA', 'ANGELA', 'ADRIANA',
+                 'BEATRIZ', 'CAMILA', 'DANIELA', 'EDUARDA', 'FERNANDA', 'GABRIELA',
+                 'HELENA', 'ISABELA', 'JESSICA', 'LARISSA', 'LETICIA', 'LUANA',
+                 'MARIANA', 'NATALIA', 'PATRICIA', 'RAFAELA', 'SABRINA', 'TATIANA',
+                 'VALENTINA', 'VITORIA', 'YASMIN'}
+    if primeiro in fem_names:
+        return 'FEMININO'
+    # Feminine endings
+    if primeiro.endswith(('A', 'IA', 'NA', 'NE', 'LA', 'LIA', 'RIA', 'INA', 'ELA', 'ICA')):
+        # Exclude common masculine names ending in A
+        masc_a = {'LUCA', 'JOSUA', 'NOA', 'EZA'}
+        if primeiro not in masc_a:
+            return 'FEMININO'
+    return 'MASCULINO'
+
+
 def legalmail_create_party(party_data):
-    """Create a party on LegalMail. Returns party ID (int) or None."""
-    r = legalmail_request("post", "/parts", json=party_data)
+    """Create a party on LegalMail. Returns party ID (int) or None.
+    Auto-fills required fields: personalidade, endereco_logradouro, genero."""
+    data = dict(party_data)
+
+    # Ensure personalidade is set with correct accent
+    if 'personalidade' not in data or not data['personalidade']:
+        doc = data.get('documento', '')
+        if '/' in doc and len(doc.replace('.','').replace('-','').replace('/','')) == 14:
+            data['personalidade'] = 'Pessoa jur\u00eddica'
+        else:
+            data['personalidade'] = 'Pessoa f\u00edsica'
+    elif data['personalidade'].lower().startswith('pessoa f'):
+        data['personalidade'] = 'Pessoa f\u00edsica'
+    elif data['personalidade'].lower().startswith('pessoa j'):
+        data['personalidade'] = 'Pessoa jur\u00eddica'
+
+    # Ensure required address fields
+    if not data.get('endereco_logradouro'):
+        data['endereco_logradouro'] = 'A informar'
+    if not data.get('endereco_numero'):
+        data['endereco_numero'] = 'S/N'
+    if not data.get('endereco_bairro'):
+        data['endereco_bairro'] = 'A informar'
+    if not data.get('endereco_cidade'):
+        data['endereco_cidade'] = 'A informar'
+    if not data.get('endereco_uf'):
+        data['endereco_uf'] = 'SP'
+    if not data.get('endereco_cep'):
+        data['endereco_cep'] = '01000-000'
+
+    # Auto-detect genero if not set
+    if not data.get('genero'):
+        data['genero'] = _detect_genero(data.get('nome', ''))
+
+    r = legalmail_request("post", "/parts", json=data)
     if r.status_code == 200:
-        data = r.json()
-        raw_id = data.get('id')
+        resp = r.json()
+        raw_id = resp.get('id')
         if raw_id is None:
-            print(f"  [WARN] API retornou sem 'id': {data}")
+            print(f"  [WARN] API retornou sem 'id': {resp}")
             return None
         pid = int(raw_id)
-        print(f"  [LEGALMAIL] Parte criada: {party_data.get('nome', '?')} id={pid}")
+        print(f"  [LEGALMAIL] Parte criada: {data.get('nome', '?')} id={pid}")
         return pid
     else:
         print(f"  [WARN] Falha ao criar parte: {r.status_code} {r.text[:200]}")
@@ -2066,24 +2156,53 @@ def legalmail_find_party_by_doc(documento):
     return None
 
 
+def _normalize_text(s):
+    """Remove accents for comparison."""
+    import unicodedata
+    return unicodedata.normalize('NFKD', str(s)).encode('ascii', 'ignore').decode('ascii').lower().strip()
+
+
+def _match_comarca(target, options):
+    """Fuzzy match comarca name against available options, ignoring accents."""
+    target_n = _normalize_text(target)
+    # Exact match (ignoring accents)
+    for opt in options:
+        if _normalize_text(opt) == target_n:
+            return opt
+    # Contains match (either direction)
+    for opt in options:
+        opt_n = _normalize_text(opt)
+        if target_n in opt_n or opt_n in target_n:
+            return opt
+    # Word overlap
+    target_words = set(target_n.split())
+    best_score, best_opt = 0, None
+    for opt in options:
+        opt_words = set(_normalize_text(opt).split())
+        score = len(target_words & opt_words)
+        if score > best_score:
+            best_score, best_opt = score, opt
+    if best_opt and best_score > 0:
+        return best_opt
+    return None
+
+
 def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
                            id_polo_ativo=None, id_polo_passivo=None,
                            tipo_beneficio='deficiente',
                            uf_tribunal='', tribunal='', instancia='1'):
-    """Fill all petition fields via sequential PUT/GET flow, then send a final PUT with ALL fields.
+    """Fill all petition fields via sequential PUT/GET flow.
 
-    The LegalMail API requires sequential PUTs to unlock dependent GET queries:
-      PUT comarca -> GET ritos -> PUT rito -> GET specialties -> PUT competencia
-      -> GET classes -> PUT classe -> GET subjects -> PUT assunto -> GET areas -> PUT area
-      -> FINAL PUT with ALL required fields + flags + parties.
-
-    All endpoints use the /petition/ prefix regardless of sistema (eProc or PJe).
+    Handles both eProc and PJe systems with their different field order requirements.
+    eProc: comarca -> rito -> competencia -> classe -> assunto -> area
+    PJe: competencia (unavailable via API) -> comarca -> classe -> assunto -> area
 
     tipo_beneficio: 'deficiente' or 'idoso' (for assunto selection)
     Returns dict with status.
     """
     resolved = {}
     errors = []
+    is_pje = 'pje' in sistema.lower() and 'eproc' not in sistema.lower()
 
     put_endpoint = f"/petition/initial?idpeticoes={idpeticoes}"
 
@@ -2091,7 +2210,6 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
         """GET with error handling. Returns list or empty list."""
         r = legalmail_request("get", endpoint)
         if r.status_code == 422:
-            print(f"  [LEGALMAIL] {label}: 422 (prerequisite fields not filled yet)")
             return []
         if r.status_code == 200:
             try:
@@ -2100,21 +2218,24 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
                     return data
             except Exception:
                 pass
-        if r.status_code != 200:
-            print(f"  [WARN] {label}: status {r.status_code}")
         return []
 
     def find_best_match(options, targets, key='nome'):
         """Find best match from options list by trying targets in priority order."""
         for target in targets:
-            match = [o for o in options if target.upper() in o.get(key, '').upper()]
+            target_n = _normalize_text(target)
+            match = [o for o in options if target_n in _normalize_text(o.get(key, ''))]
             if match:
                 return match[0].get(key, '')
         return options[0].get(key, '') if options else None
 
     def do_put(payload, label):
-        """PUT partial update. Rate limiting handled by legalmail_request."""
+        """PUT partial update with retry on 429."""
         r = legalmail_request("put", put_endpoint, json=payload)
+        if r.status_code == 429:
+            import time as _t
+            _t.sleep(65)
+            r = legalmail_request("put", put_endpoint, json=payload)
         if r.status_code == 200:
             print(f"  [LEGALMAIL] PUT {label}: OK")
         else:
@@ -2123,132 +2244,121 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
             errors.append(msg)
         return r
 
-    # ========== STEP 1: Resolve and PUT comarca (unlocks ritos, specialties) ==========
-    print(f"  [LEGALMAIL] === Preenchendo campos para peticao {idpeticoes} ===")
+    print(f"  [LEGALMAIL] === Preenchendo campos para peticao {idpeticoes} ({('PJe' if is_pje else 'eProc')}) ===")
 
-    if comarca_name:
-        comarcas = safe_get(f"/petition/county?idpeticoes={idpeticoes}", 'comarcas')
-        if comarcas:
-            comarca_names = [c.get('nome', '') for c in comarcas]
-            print(f"  [LEGALMAIL] Comarcas disponiveis ({len(comarcas)}): {comarca_names[:5]}")
-            match = [c for c in comarcas if comarca_name.upper() in c.get('nome', '').upper()]
-            if not match:
-                city = comarca_name.split('-')[0].strip().split('/')[0].strip()
-                match = [c for c in comarcas if city.upper() in c.get('nome', '').upper()]
-            if match:
-                resolved['comarca'] = match[0]['nome']
-                print(f"  [LEGALMAIL] -> comarca: {match[0]['nome']}")
+    # ========== eProc flow: comarca -> rito -> competencia -> classe -> assunto -> area ==========
+    if not is_pje:
+        # STEP 1: Comarca
+        if comarca_name:
+            comarcas = safe_get(f"/petition/county?idpeticoes={idpeticoes}", 'comarcas')
+            if comarcas:
+                comarca_names = [c.get('nome', '') for c in comarcas]
+                best = _match_comarca(comarca_name, comarca_names)
+                resolved['comarca'] = best or comarca_names[0]
+                if not best:
+                    print(f"  [WARN] Comarca '{comarca_name}' nao encontrada, usando '{comarca_names[0]}'")
             else:
-                print(f"  [WARN] Comarca '{comarca_name}' nao encontrada. Opcoes: {comarca_names[:5]}")
-                resolved['comarca'] = comarcas[0]['nome']
-                print(f"  [LEGALMAIL] -> comarca (fallback): {comarcas[0]['nome']}")
-        else:
+                resolved['comarca'] = comarca_name
+            print(f"  [LEGALMAIL] -> comarca: {resolved['comarca']}")
+            do_put({'comarca': resolved['comarca']}, 'comarca')
+
+        # STEP 2: Rito
+        ritos = safe_get(f"/petition/ritos?idpeticoes={idpeticoes}", 'ritos')
+        if ritos:
+            rito = find_best_match(ritos, ['JUIZADO ESPECIAL FEDERAL', 'JUIZADO ESPECIAL', 'ORDINÁRIO', 'COMUM'])
+            if rito:
+                resolved['rito'] = rito
+                print(f"  [LEGALMAIL] -> rito: {rito}")
+                do_put({'rito': rito}, 'rito')
+
+        # STEP 3: Competencia
+        specialties = safe_get(f"/petition/specialties?idpeticoes={idpeticoes}", 'specialties')
+        if specialties:
+            comp = find_best_match(specialties, ['FEDERAL', 'CÍVEL', 'PREVIDENCIÁRIO'])
+            if comp:
+                resolved['competencia'] = comp
+                print(f"  [LEGALMAIL] -> competencia: {comp}")
+                do_put({'competencia': comp}, 'competencia')
+
+        # STEP 4: Classe
+        classes = safe_get(f"/petition/classes?idpeticoes={idpeticoes}", 'classes')
+        if classes:
+            classe = find_best_match(classes, ['JUIZADO ESPECIAL', 'PROCEDIMENTO DO JUIZADO', 'PROCEDIMENTO COMUM'])
+            if classe:
+                resolved['classe'] = classe
+                print(f"  [LEGALMAIL] -> classe: {classe}")
+                do_put({'classe': classe}, 'classe')
+
+        # STEP 5: Assunto (may fail if classe not set — eProc returns empty classes)
+        subjects = safe_get(f"/petition/subjects?idpeticoes={idpeticoes}", 'subjects')
+        if subjects:
+            assunto = _find_bpc_assunto(subjects, tipo_beneficio)
+            if assunto:
+                resolved['assunto'] = assunto
+                print(f"  [LEGALMAIL] -> assunto: {assunto[:60]}")
+                do_put({'assunto': assunto}, 'assunto')
+        elif 'classe' not in resolved:
+            # eProc doesn't expose classes via API; assunto depends on classe.
+            # Both must be filled manually in LegalMail UI.
+            print(f"  [LEGALMAIL] eProc: classe/assunto nao disponiveis via API, preencher manualmente")
+
+        # STEP 6: Area
+        areas = safe_get(f"/petition/areas?idpeticoes={idpeticoes}", 'areas')
+        if areas:
+            area = find_best_match(areas, ['CÍVEL', 'PREVIDENCIÁRIO'])
+            if area:
+                resolved['area'] = area
+                print(f"  [LEGALMAIL] -> area: {area}")
+                do_put({'area': area}, 'area')
+
+    # ========== PJe flow ==========
+    # PJe has a circular dependency: competencia requires comarca, comarca requires
+    # competencia. The specialties endpoint returns 422 without comarca set.
+    # Solution: resolve classe + assunto from complaintsandpleadings endpoints
+    # (available without prerequisites), set comarca as text, and include all in
+    # final PUT. competencia/area/rito must be completed manually in LegalMail UI.
+    else:
+        # STEP 1: Resolve classe from complaintsandpleadings (always available)
+        classes = safe_get(f"/complaintsandpleadings/classes?idpeticoes={idpeticoes}", 'classes')
+        if not classes:
+            classes = safe_get(f"/petition/classes?idpeticoes={idpeticoes}", 'classes')
+        if classes:
+            classe = find_best_match(classes,
+                ['PROCEDIMENTO DO JUIZADO ESPECIAL CÍVEL',
+                 'PROCEDIMENTO DO JUIZADO ESPECIAL',
+                 'PROCEDIMENTO COMUM CÍVEL',
+                 'PROCEDIMENTO COMUM'])
+            if classe:
+                resolved['classe'] = classe
+                print(f"  [LEGALMAIL] -> classe: {classe}")
+
+        # STEP 2: Resolve assunto from complaintsandpleadings (always available)
+        subjects = safe_get(f"/complaintsandpleadings/subjects?idpeticoes={idpeticoes}", 'subjects')
+        if not subjects:
+            subjects = safe_get(f"/petition/subjects?idpeticoes={idpeticoes}", 'subjects')
+        if subjects:
+            assunto = _find_bpc_assunto(subjects, tipo_beneficio)
+            if assunto:
+                resolved['assunto'] = assunto
+                print(f"  [LEGALMAIL] -> assunto: {assunto[:60]}")
+
+        # STEP 3: Set comarca as text
+        if comarca_name:
             resolved['comarca'] = comarca_name
-            print(f"  [LEGALMAIL] -> comarca (direto): {comarca_name}")
-        do_put({'comarca': resolved['comarca']}, 'comarca')
 
-    # ========== STEP 2: GET ritos -> PUT rito (depends on comarca) ==========
-    ritos = safe_get(f"/petition/ritos?idpeticoes={idpeticoes}", 'ritos')
-    if ritos:
-        names = [r.get('nome', '') for r in ritos]
-        print(f"  [LEGALMAIL] Ritos disponiveis: {names[:5]}")
-        rito = find_best_match(ritos,
-            ['JUIZADO ESPECIAL FEDERAL', 'JUIZADO ESPECIAL', 'ORDINÁRIO', 'COMUM'])
-        if rito:
-            resolved['rito'] = rito
-            print(f"  [LEGALMAIL] -> rito: {rito}")
-            do_put({'rito': rito}, 'rito')
-    else:
-        print(f"  [LEGALMAIL] Ritos nao disponiveis, pulando")
+        # NOTE: competencia, area, rito are blocked by API circular dependency.
+        # They MUST be completed manually in LegalMail UI after draft creation.
+        print(f"  [LEGALMAIL] PJe: competencia/area/rito precisam ser preenchidos manualmente no LegalMail")
 
-    # ========== STEP 3: GET specialties -> PUT competencia (depends on comarca) ==========
-    specialties = safe_get(f"/petition/specialties?idpeticoes={idpeticoes}", 'specialties')
-    if specialties:
-        names = [s.get('nome', '') for s in specialties]
-        print(f"  [LEGALMAIL] Competencias disponiveis: {names[:5]}")
-        comp = find_best_match(specialties,
-            ['DIREITO PREVIDENCIÁRIO', 'PREVIDENCIÁRIO', 'FEDERAL', 'CÍVEL', 'JEF CÍVEL'])
-        if comp:
-            resolved['competencia'] = comp
-            print(f"  [LEGALMAIL] -> competencia: {comp}")
-            do_put({'competencia': comp}, 'competencia')
-    else:
-        print(f"  [LEGALMAIL] Specialties nao disponiveis, pulando")
-
-    # ========== STEP 4: GET classes -> PUT classe (depends on rito + competencia) ==========
-    classes = safe_get(f"/petition/classes?idpeticoes={idpeticoes}", 'classes')
-    if classes:
-        names = [c.get('nome', '') for c in classes]
-        print(f"  [LEGALMAIL] Classes disponiveis ({len(classes)}): {names[:10]}")
-        classe = find_best_match(classes,
-            ['JUIZADO ESPECIAL', 'PROCEDIMENTO DO JUIZADO', 'PROCEDIMENTO COMUM'])
-        if classe:
-            resolved['classe'] = classe
-            print(f"  [LEGALMAIL] -> classe: {classe}")
-            do_put({'classe': classe}, 'classe')
-    else:
-        print(f"  [LEGALMAIL] Classes nao disponiveis, pulando")
-
-    # ========== STEP 5: GET subjects -> PUT assunto (depends on classe) ==========
-    # BPC: NUNCA usar benefício previdenciário por incapacidade (remessa indevida à Central de Perícias)
-    subjects = safe_get(f"/petition/subjects?idpeticoes={idpeticoes}", 'subjects')
-    if subjects:
-        search_term = 'defici' if tipo_beneficio == 'deficiente' else 'idoso'
-        assunto = None
-        # Priority 1: "assistencial" + "203" + deficiente/idoso
-        for s in subjects:
-            nome = s.get('nome', '')
-            if 'assistencial' in nome.lower() and '203' in nome and search_term in nome.lower():
-                assunto = nome
-                break
-        # Priority 2: "assistencial" + deficiente/idoso
-        if not assunto:
-            for s in subjects:
-                nome = s.get('nome', '')
-                if 'assistencial' in nome.lower() and search_term in nome.lower():
-                    assunto = nome
-                    break
-        # Priority 3: any "assistencial"
-        if not assunto:
-            for s in subjects:
-                nome = s.get('nome', '')
-                if 'assistencial' in nome.lower():
-                    assunto = nome
-                    break
-        if assunto:
-            resolved['assunto'] = assunto
-            print(f"  [LEGALMAIL] -> assunto: {assunto[:60]}")
-            do_put({'assunto': assunto}, 'assunto')
-        else:
-            print(f"  [LEGALMAIL] Nenhum assunto assistencial encontrado entre {len(subjects)} opcoes")
-    else:
-        print(f"  [LEGALMAIL] Subjects nao disponiveis, pulando")
-
-    # ========== STEP 6: GET areas -> PUT area (depends on previous fields) ==========
-    areas = safe_get(f"/petition/areas?idpeticoes={idpeticoes}", 'areas')
-    if areas:
-        area = find_best_match(areas, ['DIREITO PREVIDENCIÁRIO', 'PREVIDENCIÁRIO', 'CÍVEL'])
-        if area:
-            resolved['area'] = area
-            print(f"  [LEGALMAIL] -> area: {area}")
-            do_put({'area': area}, 'area')
-    else:
-        print(f"  [LEGALMAIL] Areas nao disponiveis, pulando")
-
-    # ========== STEP 7: Build FINAL payload with ALL required fields ==========
-
-    # Flags
+    # ========== FINAL payload with ALL required fields ==========
     resolved['gratuidade'] = True
-    resolved['liminar'] = True
+    resolved['liminar'] = False
     resolved['100digital'] = True
     resolved['renuncia60Salarios'] = True
     resolved['distribuicao'] = 'Por sorteio'
 
-    # Valor da causa
     if valor_causa:
-        resolved['valorCausa'] = valor_causa
-
-    # Tribunal metadata (from draft creation)
+        resolved['valorCausa'] = f'{valor_causa:.2f}' if isinstance(valor_causa, float) else str(valor_causa)
     if uf_tribunal:
         resolved['ufTribunal'] = uf_tribunal
     if tribunal:
@@ -2258,15 +2368,18 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
     if instancia:
         resolved['instancia'] = instancia
 
-    # Parties
     if id_polo_ativo:
         resolved['idpoloativo'] = [id_polo_ativo] if isinstance(id_polo_ativo, int) else id_polo_ativo
     if id_polo_passivo:
         resolved['idpolopassivo'] = [id_polo_passivo] if isinstance(id_polo_passivo, int) else id_polo_passivo
 
-    # ========== FINAL PUT: Send ALL accumulated fields ==========
-    print(f"  [LEGALMAIL] Enviando PUT final com {len(resolved)} campos: {list(resolved.keys())}")
+    # FINAL PUT
+    print(f"  [LEGALMAIL] PUT final com {len(resolved)} campos: {list(resolved.keys())}")
     r = legalmail_request("put", put_endpoint, json=resolved)
+    if r.status_code == 429:
+        import time as _t
+        _t.sleep(65)
+        r = legalmail_request("put", put_endpoint, json=resolved)
     if r.status_code == 200:
         print(f"  [LEGALMAIL] PUT final: OK")
     else:
@@ -2275,6 +2388,41 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
         print(f"  [ERRO] {msg}")
 
     return {"filled": resolved, "errors": errors}
+
+
+def _find_bpc_assunto(subjects, tipo_beneficio='deficiente'):
+    """Find the best BPC/LOAS assunto from subjects list.
+    NEVER use 'beneficio previdenciario por incapacidade' (causes wrong routing)."""
+    search_term = 'defici' if tipo_beneficio == 'deficiente' else 'idoso'
+    # Priority 1: "assistencial" + "203" + deficiente/idoso
+    for s in subjects:
+        nome = s.get('nome', '')
+        nl = nome.lower()
+        if 'assistencial' in nl and '203' in nome and search_term in nl:
+            return nome
+    # Priority 2: "assistencial" + deficiente/idoso
+    for s in subjects:
+        nome = s.get('nome', '')
+        nl = nome.lower()
+        if 'assistencial' in nl and search_term in nl:
+            return nome
+    # Priority 3: "Pessoa com Deficiência" (PJe specific)
+    for s in subjects:
+        nome = s.get('nome', '')
+        if 'Pessoa com Defici' in nome or '11946' in nome:
+            return nome
+    # Priority 4: any "assistencial" (not incapacidade/previdenciario)
+    for s in subjects:
+        nome = s.get('nome', '')
+        nl = nome.lower()
+        if 'assistencial' in nl and 'incapacidade' not in nl:
+            return nome
+    # Priority 5: "DIREITO ASSISTENCIAL" category
+    for s in subjects:
+        nome = s.get('nome', '')
+        if 'ASSISTENCIAL' in nome.upper():
+            return nome
+    return None
 
 
 def docx_to_pdf(docx_path):
@@ -2333,15 +2481,52 @@ def legalmail_request(method, endpoint, **kwargs):
     url = f"{LEGALMAIL_BASE}{endpoint}{sep}api_key={LEGALMAIL_API_KEY}"
     try:
         resp = getattr(_requests, method)(url, **kwargs, timeout=30)
+        # Handle rate limiting with auto-retry
+        if resp.status_code == 429:
+            print(f"  [LEGALMAIL] Rate limit em {method.upper()} {endpoint}, aguardando 65s...")
+            _t.sleep(65)
+            resp = getattr(_requests, method)(url, **kwargs, timeout=30)
+        # Wrap json() to handle empty responses
+        _orig_json = resp.json
+        def _safe_json(**kw):
+            try:
+                return _orig_json(**kw)
+            except Exception:
+                return {} if method.lower() in ('put', 'post', 'delete') else []
+        resp.json = _safe_json
         return resp
     except _requests.exceptions.RequestException as e:
         print(f"  [LEGALMAIL] Erro de rede em {method.upper()} {endpoint}: {e}")
-        # Return a fake response to avoid crashes
         class FakeResp:
             status_code = 503
             text = str(e)
             def json(self): return {}
         return FakeResp()
+
+
+def resolve_folder_path(pasta):
+    """Resolve folder path handling Windows encoding issues with accented chars.
+    Returns the actual path that exists on disk, or the original if not found."""
+    if os.path.isdir(pasta):
+        return pasta
+    parent = os.path.dirname(pasta)
+    target_base = os.path.basename(pasta)
+    if not os.path.isdir(parent):
+        return pasta
+    # Try matching by normalized name
+    target_n = _normalize_text(target_base)
+    for d in os.listdir(parent):
+        if os.path.isdir(os.path.join(parent, d)):
+            if _normalize_text(d) == target_n:
+                return os.path.join(parent, d)
+    # Try matching by first part (before underscore)
+    target_first = target_n.split('_')[0].strip()
+    for d in os.listdir(parent):
+        if os.path.isdir(os.path.join(parent, d)):
+            d_first = _normalize_text(d).split('_')[0].strip()
+            if d_first == target_first:
+                return os.path.join(parent, d)
+    return pasta
 
 
 def _extract_client_data_from_folder(pasta):
