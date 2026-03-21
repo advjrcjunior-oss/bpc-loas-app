@@ -1674,7 +1674,12 @@ def legalmail_resolve_doc_type(idpeticoes, prefix):
     global _attachment_type_cache
 
     if idpeticoes not in _attachment_type_cache:
+        import time as _time_att
         r = legalmail_request("get", f"/petition/attachment/types?idpeticoes={idpeticoes}")
+        if r.status_code == 429:
+            print(f"  [LEGALMAIL] Rate limit nos tipos de anexo, aguardando 60s...")
+            _time_att.sleep(60)
+            r = legalmail_request("get", f"/petition/attachment/types?idpeticoes={idpeticoes}")
         if r.status_code != 200:
             print(f"  [WARN] Falha ao buscar tipos de anexo: {r.status_code}")
             return None
@@ -2144,7 +2149,20 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
         do_put({'comarca': resolved.get('comarca', comarca_name)}, 'comarca')
         time.sleep(2)
 
-    # Step 1.2: PUT competencia (after comarca)
+    # Step 2: PUT rito (after comarca — eProc requires rito before competencia)
+    ritos = safe_get(f"{prefix}/ritos?idpeticoes={idpeticoes}", 'ritos')
+    if ritos:
+        names = [r.get('nome', '') for r in ritos]
+        print(f"  [LEGALMAIL] Ritos: {names[:5]}")
+        rito = find_best_match(ritos,
+            ['JUIZADO ESPECIAL FEDERAL', 'JUIZADO ESPECIAL', 'ORDINÁRIO', 'COMUM'])
+        if rito:
+            resolved['rito'] = rito
+            print(f"  [LEGALMAIL] -> rito: {rito}")
+            do_put({'rito': rito}, 'rito')
+            time.sleep(2)
+
+    # Step 3: PUT competencia (after comarca + rito)
     specialties = safe_get(f"{prefix}/specialties?idpeticoes={idpeticoes}", 'specialties')
     if not specialties and is_eproc:
         specialties = safe_get(f"/petition/specialties?idpeticoes={idpeticoes}", 'specialties (fallback)')
@@ -2161,20 +2179,7 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
     do_put({'competencia': resolved['competencia']}, 'competencia')
     time.sleep(2)
 
-    # === Step 3: Query rito (after comarca + competencia) and PUT ===
-    ritos = safe_get(f"{prefix}/ritos?idpeticoes={idpeticoes}", 'ritos')
-    if ritos:
-        names = [r.get('nome', '') for r in ritos]
-        print(f"  [LEGALMAIL] Ritos: {names[:5]}")
-        rito = find_best_match(ritos,
-            ['JUIZADO ESPECIAL FEDERAL', 'JUIZADO ESPECIAL', 'ORDINÁRIO', 'COMUM'])
-        if rito:
-            resolved['rito'] = rito
-            print(f"  [LEGALMAIL] -> rito: {rito}")
-            do_put({'rito': rito}, 'rito')
-            time.sleep(2)
-
-    # === Step 4: Query classe and PUT ===
+    # Step 4: PUT classe (after rito + competencia)
     classes = safe_get(f"{prefix}/classes?idpeticoes={idpeticoes}", 'classes')
     if classes:
         names = [c.get('nome', '') for c in classes]
@@ -2212,6 +2217,8 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
         if assunto:
             resolved['assunto'] = assunto
             print(f"  [LEGALMAIL] -> assunto: {assunto[:60]}")
+            do_put({'assunto': assunto}, 'assunto')
+            time.sleep(2)
 
     # === Step 6: Query areas (for PJe) ===
     if not is_eproc:
