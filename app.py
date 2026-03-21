@@ -593,6 +593,7 @@ def lote():
 # ==================== MISTRAL OCR ====================
 _MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
 _mistral_client = None
+_ocr_cache = {}  # file_path -> text (avoid re-OCRing same file)
 
 def _get_mistral():
     global _mistral_client
@@ -603,7 +604,12 @@ def _get_mistral():
 
 def mistral_ocr(file_path):
     """Extract text from scanned PDF/image via Mistral OCR SDK.
-    Returns markdown text or empty string on failure."""
+    Returns markdown text or empty string on failure. Results are cached."""
+    # Check cache first
+    abs_path = os.path.abspath(file_path)
+    if abs_path in _ocr_cache:
+        return _ocr_cache[abs_path]
+
     client = _get_mistral()
     if not client:
         return ""
@@ -620,9 +626,11 @@ def mistral_ocr(file_path):
         text = "\n\n".join(p.markdown for p in result.pages if p.markdown)
         if len(text.strip()) > 20:
             print(f"  [OCR OK] {filename} -> {len(text)} chars")
+            _ocr_cache[abs_path] = text.strip()
             return text.strip()
     except Exception as e:
         print(f"  [OCR FAIL] {os.path.basename(file_path)}: {e}")
+    _ocr_cache[abs_path] = ""
     return ""
 
 
@@ -2147,7 +2155,7 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
         else:
             resolved['comarca'] = comarca_name
         do_put({'comarca': resolved.get('comarca', comarca_name)}, 'comarca')
-        time.sleep(2)
+        time.sleep(3)  # Wait for API to process before querying dependent fields
 
     # Step 2: PUT rito (after comarca — eProc requires rito before competencia)
     ritos = safe_get(f"{prefix}/ritos?idpeticoes={idpeticoes}", 'ritos')
@@ -2160,7 +2168,6 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
             resolved['rito'] = rito
             print(f"  [LEGALMAIL] -> rito: {rito}")
             do_put({'rito': rito}, 'rito')
-            time.sleep(2)
 
     # Step 3: PUT competencia (after comarca + rito)
     specialties = safe_get(f"{prefix}/specialties?idpeticoes={idpeticoes}", 'specialties')
@@ -2177,7 +2184,6 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
         resolved['competencia'] = 'Federal' if is_eproc else 'DIREITO PREVIDENCIÁRIO'
     print(f"  [LEGALMAIL] -> competencia: {resolved['competencia']}")
     do_put({'competencia': resolved['competencia']}, 'competencia')
-    time.sleep(2)
 
     # Step 4: PUT classe (after rito + competencia)
     classes = safe_get(f"{prefix}/classes?idpeticoes={idpeticoes}", 'classes')
@@ -2190,15 +2196,21 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
             resolved['classe'] = classe
             print(f"  [LEGALMAIL] -> classe: {classe}")
             do_put({'classe': classe}, 'classe')
-            time.sleep(2)
     else:
-        # eProc TRF-4: classes endpoint often returns empty - try default values
-        for default_classe in ['JUIZADO ESPECIAL FEDERAL', 'PROCEDIMENTO COMUM']:
-            r = do_put({'classe': default_classe}, f'classe ({default_classe})')
-            if r.status_code == 200:
-                resolved['classe'] = default_classe
-                break
-            time.sleep(1)
+        # Classes empty — wait and retry (API may need time after competencia PUT)
+        print(f"  [LEGALMAIL] Classes vazio, aguardando 5s e retentando...")
+        time.sleep(5)
+        classes = safe_get(f"{prefix}/classes?idpeticoes={idpeticoes}", 'classes (retry)')
+        if classes:
+            names = [c.get('nome', '') for c in classes]
+            print(f"  [LEGALMAIL] Classes (retry): {names[:10]}")
+            classe = find_best_match(classes,
+                ['JUIZADO ESPECIAL', 'PROCEDIMENTO COMUM', 'PROCEDIMENTO DO JUIZADO'])
+            if classe:
+                resolved['classe'] = classe
+                print(f"  [LEGALMAIL] -> classe: {classe}")
+                do_put({'classe': classe}, 'classe')
+                time.sleep(3)
 
     # === Step 5: Query assunto and PUT (BPC: NUNCA usar benefício previdenciário por incapacidade) ===
     subjects = safe_get(f"{prefix}/subjects?idpeticoes={idpeticoes}", 'subjects')
@@ -2226,7 +2238,6 @@ def legalmail_fill_fields(idpeticoes, sistema, comarca_name, valor_causa=None,
             resolved['assunto'] = assunto
             print(f"  [LEGALMAIL] -> assunto: {assunto[:60]}")
             do_put({'assunto': assunto}, 'assunto')
-            time.sleep(2)
 
     # === Step 6: Query areas (for PJe) ===
     if not is_eproc:
@@ -2312,9 +2323,18 @@ try {{
     return None
 
 
+_last_legalmail_call = [0.0]  # Track last API call time
+
 def legalmail_request(method, endpoint, **kwargs):
-    """Make authenticated request to LegalMail API."""
+    """Make authenticated request to LegalMail API. Respects 30 req/min limit."""
     import requests as _requests
+    import time as _t
+    # Enforce minimum 2.1s between calls (30 req/min = 1 req/2s)
+    elapsed = _t.time() - _last_legalmail_call[0]
+    if elapsed < 2.1:
+        _t.sleep(2.1 - elapsed)
+    _last_legalmail_call[0] = _t.time()
+
     sep = '&' if '?' in endpoint else '?'
     url = f"{LEGALMAIL_BASE}{endpoint}{sep}api_key={LEGALMAIL_API_KEY}"
     try:
@@ -2382,8 +2402,10 @@ def _extract_client_data_from_folder(pasta):
             text = mistral_ocr(os.path.join(pasta, f))
             if not text:
                 continue
-            # Try to extract CEP
-            cep_match = _re.search(r'\b(\d{5})-?(\d{3})\b', text)
+            # Try to extract CEP (various formats from OCR)
+            cep_match = _re.search(r'(?:CEP|cep|Cep)[:\s]*(\d{5})[.-]?(\d{3})', text)
+            if not cep_match:
+                cep_match = _re.search(r'\b(\d{5})[.-](\d{3})\b', text)
             if cep_match:
                 data['endereco_cep'] = f"{cep_match.group(1)}-{cep_match.group(2)}"
             # Extract city/UF
@@ -2509,12 +2531,10 @@ def legalmail_criar_rascunho(pasta, tribunal, sistema, comarca, assunto=None,
     id_polo_passivo = None
 
     # INSS (polo passivo)
-    time.sleep(2)
     id_polo_passivo = legalmail_get_or_create_inss()
 
     # Polo ativo (client)
     if client_data and client_data.get('documento'):
-        time.sleep(2)
         party_data = {**client_data, 'polo': 'ativo'}
         if 'etnia' not in party_data:
             party_data['etnia'] = 'Não declarada'
@@ -2525,7 +2545,6 @@ def legalmail_criar_rascunho(pasta, tribunal, sistema, comarca, assunto=None,
         print(f"  [WARN] Dados do cliente nao encontrados - polo ativo nao preenchido")
 
     # Step 4: Fill all petition fields (comarca -> rito -> competencia -> classe -> assunto -> flags -> parties)
-    time.sleep(2)
     fill_result = legalmail_fill_fields(
         idpeticoes, sistema, comarca,
         valor_causa=valor_causa,
@@ -2583,7 +2602,6 @@ def legalmail_criar_rascunho(pasta, tribunal, sistema, comarca, assunto=None,
                 print(f"  [WARN] Tipo de anexo não encontrado para prefixo {prefix}: {f}")
 
     # Step 6: Upload main petition PDF
-    time.sleep(2)
     if peticao_pdf and os.path.exists(peticao_pdf):
         print(f"  [LEGALMAIL] Enviando petição principal...")
         with open(peticao_pdf, 'rb') as pf:
@@ -3250,7 +3268,6 @@ def monitor_check_updates():
                 }
 
                 # Fetch movement text (for analysis later)
-                time.sleep(2)
                 texto = monitor_fetch_movement_text(mov_id)
                 if texto:
                     notif["texto_movimentacao"] = texto[:8000]
@@ -3873,7 +3890,6 @@ def legalmail_criar_peticao_intermediaria():
 
     # Step 3: Upload petition PDF
     if pdf_path and os.path.exists(pdf_path):
-        time.sleep(2)
         with open(pdf_path, 'rb') as pf:
             resp = legalmail_request("post",
                 f"/petition/file?idpeticoes={idpeticoes}&idprocessos={idprocesso}",
