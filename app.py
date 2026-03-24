@@ -4825,6 +4825,12 @@ def monitoramento_page():
 CONVERSAPP_API_TOKEN = os.environ.get("CONVERSAPP_API_TOKEN", "")  # Bearer token: pn_xxxx
 CONVERSAPP_API_BASE = "https://api.wts.chat"
 CONVERSAPP_CHANNEL_ID = os.environ.get("CONVERSAPP_CHANNEL_ID", "5395dbba-34f9-42a5-852f-77e5e11a7c94")
+CONVERSAPP_COMERCIAL_CHANNEL_ID = os.environ.get("CONVERSAPP_COMERCIAL_CHANNEL_ID", "bd4eeb49-fdec-44b7-8157-1570c78c8f2a")
+
+# Template IDs for follow-up (Meta approved). Set via env when templates are approved.
+FOLLOWUP_TEMPLATE_ID = os.environ.get("FOLLOWUP_TEMPLATE_ID", "")  # Generic follow-up docs template
+FOLLOWUP_TEMPLATE_LEMBRETE_ID = os.environ.get("FOLLOWUP_TEMPLATE_LEMBRETE_ID", "")  # Reminder template
+FOLLOWUP_TEMPLATE_URGENTE_ID = os.environ.get("FOLLOWUP_TEMPLATE_URGENTE_ID", "")  # Urgent template
 
 # ElevenLabs TTS
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
@@ -6797,6 +6803,44 @@ def followup_executar():
                 })
                 continue
 
+            # === TENTATIVA 3+: MayaHub voice call instead of WhatsApp ===
+            if tentativas >= 2 and MAYAHUB_API_KEY and MAYAHUB_ASSISTANT_ID:
+                phone_call = f"+55{phone_clean}" if not phone_clean.startswith("55") else f"+{phone_clean}"
+                nome_cliente = (entry.get("nome") or "").split()[0] if entry.get("nome") else "cliente"
+                docs_str = ", ".join(entry.get("docs_pendentes", [])) or "documentos pendentes"
+                try:
+                    from mayahub import _mayahub_request, MAYAHUB_ASSISTANT_ID as _mh_aid
+                    call_resp = _mayahub_request("POST", "/calls", json={
+                        "phone_number": phone_call,
+                        "assistant_id": int(_mh_aid),
+                        "variables": {
+                            "nome_cliente": nome_cliente,
+                            "nome_advogado": "Dr. Jose Roberto",
+                            "tipo": "followup_docs",
+                            "detalhes": f"Documentos pendentes: {docs_str}",
+                            "assunto": "documentos para o processo",
+                        }
+                    })
+                    entry["tentativas"] = tentativas + 1
+                    entry["ultimo_followup"] = hoje.isoformat()
+                    queue[phone_clean] = entry
+                    resultados.append({
+                        "phone": phone_clean,
+                        "nome": entry.get("nome"),
+                        "docs": entry.get("docs_pendentes"),
+                        "acao": "ligacao_mayahub",
+                        "tentativa": tentativas + 1,
+                        "motivo": motivo,
+                    })
+                    print(f"[FOLLOWUP] Ligacao MayaHub para {phone_clean} ({entry.get('nome')})")
+                    import time as _time_fup
+                    _time_fup.sleep(5)
+                except Exception as e:
+                    print(f"[FOLLOWUP] Erro MayaHub, fallback WhatsApp: {e}")
+                    # Fall through to WhatsApp below
+                else:
+                    continue
+
             # Read conversation history for context
             conv_msgs = []
             sid = entry.get("session_id")
@@ -6806,10 +6850,28 @@ def followup_executar():
             # Generate personalized message
             mensagem = _followup_generate_message(entry, conv_msgs)
 
-            # Send message
+            # Send message - try template on commercial channel first, fallback to direct
             phone_formatted = f"+55{phone_clean}" if not phone_clean.startswith("55") else f"+{phone_clean}"
             try:
-                whatsapp_send_message(phone_formatted, mensagem)
+                sent = False
+                # Use Meta template on commercial channel for first contact (out of 24h window)
+                if tentativas == 0 and FOLLOWUP_TEMPLATE_ID and CONVERSAPP_COMERCIAL_CHANNEL_ID:
+                    nome_primeiro = (entry.get("nome") or "").split()[0] if entry.get("nome") else ""
+                    try:
+                        template_resp = conversapp_request("post", "/chat/v1/message/send", json={
+                            "channelId": CONVERSAPP_COMERCIAL_CHANNEL_ID,
+                            "number": phone_formatted,
+                            "body": {"templateId": FOLLOWUP_TEMPLATE_ID, "params": [nome_primeiro or "cliente"]},
+                        })
+                        if template_resp.status_code in (200, 201):
+                            sent = True
+                            print(f"[FOLLOWUP] Template enviado via canal comercial para {phone_clean}")
+                    except Exception as e:
+                        print(f"[FOLLOWUP] Erro template comercial, fallback direto: {e}")
+
+                if not sent:
+                    whatsapp_send_message(phone_formatted, mensagem)
+
                 entry["tentativas"] = tentativas + 1
                 entry["ultimo_followup"] = hoje.isoformat()
                 if data_prometida:
@@ -6819,7 +6881,7 @@ def followup_executar():
                     "phone": phone_clean,
                     "nome": entry.get("nome"),
                     "docs": entry.get("docs_pendentes"),
-                    "acao": "mensagem_enviada",
+                    "acao": "template_enviado" if sent else "mensagem_enviada",
                     "tentativa": tentativas + 1,
                     "motivo": motivo,
                     "mensagem": mensagem[:150]
@@ -8280,6 +8342,48 @@ if MATERNIDADE_ENABLED:
 else:
     print("[MATERNIDADE] Acompanhamento DESATIVADO - ative com MATERNIDADE_ENABLED=true")
 
+
+# ========== FOLLOW-UP SCHEDULER AUTOMÁTICO ==========
+FOLLOWUP_ENABLED = os.environ.get("FOLLOWUP_ENABLED", "true").lower() in ("true", "1", "yes")
+FOLLOWUP_HORA = int(os.environ.get("FOLLOWUP_HORA", "10"))  # Hora do dia para rodar (10h)
+
+def _followup_scheduler_loop():
+    """Background thread that runs follow-up daily at configured hour."""
+    import time as _time_fs
+    import datetime as _dt_fs
+    _last_run_date = None
+
+    while True:
+        try:
+            agora = _dt_fs.datetime.now()
+            hoje = agora.date().isoformat()
+
+            if (agora.hour >= FOLLOWUP_HORA
+                and agora.weekday() < 5  # Mon-Fri only
+                and _last_run_date != hoje):
+
+                print(f"[FOLLOWUP SCHEDULER] Iniciando follow-up automatico {hoje} {agora.strftime('%H:%M')}")
+                _last_run_date = hoje
+
+                try:
+                    with app.test_request_context(f"/api/followup/executar?token={os.environ.get('ADMIN_TOKEN', '')}"):
+                        from flask import g
+                        result = followup_executar()
+                        print(f"[FOLLOWUP SCHEDULER] Concluido: {result.get_json() if hasattr(result, 'get_json') else 'ok'}")
+                except Exception as e:
+                    print(f"[FOLLOWUP SCHEDULER] Erro: {e}")
+                    traceback.print_exc()
+
+            _time_fs.sleep(1800)  # Check every 30 min
+        except Exception as e:
+            print(f"[FOLLOWUP SCHEDULER] Erro no loop: {e}")
+            _time_fs.sleep(3600)
+
+if FOLLOWUP_ENABLED and CONVERSAPP_API_TOKEN:
+    threading.Thread(target=_followup_scheduler_loop, daemon=True).start()
+    print(f"[FOLLOWUP] Scheduler ATIVADO - roda diariamente as {FOLLOWUP_HORA}h (seg-sex)")
+else:
+    print("[FOLLOWUP] Scheduler DESATIVADO")
 
 # ========== REGISTER BLUEPRINTS ==========
 from mayahub import mayahub_bp, MAYAHUB_API_KEY
