@@ -350,7 +350,13 @@ class LegalMailService:
         if len(ativo) > 1:
             form['processos_clientes[]'] = [str(a) for a in ativo[1:]]
         if dados.get('valorCausa'):
-            form['valorCausa_proporAcao'] = str(dados['valorCausa'])
+            # proporAcao/update interpreta valor como inteiro (reais sem centavos)
+            # Se enviar 25861.20, salva como 2586120 (multiplica por 100)
+            # Solucao: arredondar para inteiro SEMPRE
+            vc = dados['valorCausa']
+            if isinstance(vc, float):
+                vc = round(vc)
+            form['valorCausa_proporAcao'] = str(int(vc))
 
         r = requests.post('https://app.legalmail.com.br/api/proporAcao/update',
                          data=form, cookies=cookies, timeout=15)
