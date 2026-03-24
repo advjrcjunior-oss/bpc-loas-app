@@ -104,24 +104,25 @@ DOC_PREFIX_MAP = {
 
 
 # Ordem de upload dos documentos (prefixo → prioridade)
+# Ordem EXATA de upload (referencia: caso Erick Machado 24/03/2026)
 ORDEM_DOCUMENTOS = [
-    "1",   # Petição (principal)
-    "2",   # Procuração
-    "4",   # Declaração hipossuficiência
+    "1",   # Petição inicial (arquivo principal)
+    "2",   # Procuração ad judicia (SOMENTE assinada, excluir administrativa)
+    "4",   # Declaração de hipossuficiência / Gratuidade
     "3",   # Contrato de honorários
-    "5",   # Documento do cliente/menor
-    "6",   # Documentos de familiares
+    "5",   # Documento de identidade do cliente/menor
+    "6",   # Documentos de identidade familiares (agrupados)
     "7",   # Comprovante de residência
     "11",  # Requerimento INSS
-    "12",  # Carta indeferimento
     "13",  # Laudo médico
     "14",  # Relatório médico
     "15",  # Receitas e exames
     "16",  # Relatório médico 2
     "17",  # Exames de imagem
     "20",  # Biometria
-    "PLANILHA",  # Planilha de cálculos
-    "QUESITOS",  # Quesitos
+    "QUESITOS_MED",  # Quesitos perícia médica
+    "QUESITOS_SOC",  # Quesitos perícia social
+    "PLANILHA",  # Planilha de cálculos (último)
 ]
 
 
@@ -176,9 +177,13 @@ def ordenar_documentos(arquivos):
     def prioridade(nome):
         nome_upper = nome.upper()
         if "PLANILHA" in nome_upper:
-            return 100
+            return ORDEM_DOCUMENTOS.index("PLANILHA") if "PLANILHA" in ORDEM_DOCUMENTOS else 100
+        if "QUESITOS" in nome_upper and "MEDIC" in nome_upper:
+            return ORDEM_DOCUMENTOS.index("QUESITOS_MED") if "QUESITOS_MED" in ORDEM_DOCUMENTOS else 98
+        if "QUESITOS" in nome_upper and "SOCIAL" in nome_upper:
+            return ORDEM_DOCUMENTOS.index("QUESITOS_SOC") if "QUESITOS_SOC" in ORDEM_DOCUMENTOS else 99
         if "QUESITOS" in nome_upper:
-            return 101
+            return 98  # quesitos generico
         # Extrair prefixo numerico
         m = re.match(r'^(\d+)', os.path.basename(nome))
         if m:
@@ -187,7 +192,7 @@ def ordenar_documentos(arquivos):
                 return ORDEM_DOCUMENTOS.index(str(num))
             except ValueError:
                 return 50 + num
-        return 99
+        return 97
     return sorted(arquivos, key=prioridade)
 
 
@@ -897,6 +902,11 @@ class LegalMailService:
                 print(f"    [SKIP] Adjudicacao excluida: {f}")
                 continue
 
+            # Procuração: só ad judicia (assinada). Excluir administrativa.
+            if prefix == "2" and ("ADMINISTRATIVA" in nome_upper or "ADMIN" in nome_upper):
+                print(f"    [SKIP] Procuracao administrativa excluida: {f}")
+                continue
+
             # Detectar prefixo
             match = re.match(r'^(\d+)', f)
             prefix = match.group(1) if match else None
@@ -904,6 +914,10 @@ class LegalMailService:
             # Tratar planilha e quesitos (sem prefixo numerico)
             if "PLANILHA" in nome_upper:
                 prefix = "PLANILHA"
+            elif "QUESITOS" in nome_upper and "MEDIC" in nome_upper:
+                prefix = "QUESITOS"
+            elif "QUESITOS" in nome_upper and "SOCIAL" in nome_upper:
+                prefix = "QUESITOS"
             elif "QUESITOS" in nome_upper:
                 prefix = "QUESITOS"
 
