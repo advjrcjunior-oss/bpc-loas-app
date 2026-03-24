@@ -633,6 +633,67 @@ class LegalMailService:
             if uf_matches:
                 return uf_matches[0]
 
+        # 5. Fallback: busca na internet pela jurisdição correta
+        jurisdicao_web = self._buscar_jurisdicao_web(cidade, uf, nomes)
+        if jurisdicao_web:
+            return jurisdicao_web
+
+        return None
+
+    def _buscar_jurisdicao_web(self, cidade, uf, nomes_disponiveis):
+        """Fallback: busca jurisdição na internet quando match local falha."""
+        if not cidade or not uf:
+            return None
+        try:
+            # Tentar buscar via API pública do IBGE → comarca federal
+            # Estratégia: buscar cidade vizinha que tenha JEF
+            import unicodedata
+            def normalize(s):
+                return unicodedata.normalize('NFD', s).encode('ascii', 'ignore').decode().upper()
+
+            cidade_norm = normalize(cidade)
+
+            # Buscar no Google a subsecão/JEF mais próximo
+            query = f"Juizado Especial Federal {cidade} {uf} jurisdição"
+            try:
+                r = requests.get(
+                    f"https://www.google.com/search?q={requests.utils.quote(query)}&num=3",
+                    headers={"User-Agent": "Mozilla/5.0"}, timeout=10,
+                )
+                texto = r.text.upper()
+
+                # Tentar encontrar algum dos nomes disponíveis no resultado
+                for nome in nomes_disponiveis:
+                    nome_norm = normalize(nome)
+                    # Extrair cidade do nome (ex: "Subsecao Judiciaria de Forquilhinha")
+                    for parte in nome_norm.split():
+                        if len(parte) > 4 and parte in texto:
+                            print(f"    [WEB] Jurisdição encontrada via web: {nome}")
+                            return nome
+            except Exception:
+                pass
+
+            # Fallback 2: tentar cidade sede da seção judiciária do estado
+            capitais = {
+                'SP': 'SAO PAULO', 'RJ': 'RIO DE JANEIRO', 'MG': 'BELO HORIZONTE',
+                'RS': 'PORTO ALEGRE', 'PR': 'CURITIBA', 'SC': 'FLORIANOPOLIS',
+                'BA': 'SALVADOR', 'PE': 'RECIFE', 'CE': 'FORTALEZA',
+                'PA': 'BELEM', 'AM': 'MANAUS', 'GO': 'GOIANIA',
+                'DF': 'BRASILIA', 'ES': 'VITORIA', 'AL': 'MACEIO',
+                'SE': 'ARACAJU', 'RN': 'NATAL', 'PB': 'JOAO PESSOA',
+                'PI': 'TERESINA', 'MA': 'SAO LUIS', 'MT': 'CUIABA',
+                'MS': 'CAMPO GRANDE', 'RO': 'PORTO VELHO', 'AC': 'RIO BRANCO',
+                'AP': 'MACAPA', 'RR': 'BOA VISTA', 'TO': 'PALMAS',
+            }
+            capital = capitais.get(uf.upper(), '')
+            if capital:
+                capital_matches = [n for n in nomes_disponiveis if capital in normalize(n)]
+                if capital_matches:
+                    print(f"    [WEB] Jurisdição fallback para capital: {capital_matches[0]}")
+                    return capital_matches[0]
+
+        except Exception as e:
+            print(f"    [WEB] Erro buscar jurisdição: {e}")
         return None
 
     def _match_assunto_bpc(self, subjects, tipo='deficiente'):
