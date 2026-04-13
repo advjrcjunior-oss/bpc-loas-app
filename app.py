@@ -696,7 +696,8 @@ def analisar_pasta_internal(pasta):
     # Scanned docs: try Mistral OCR first, fallback to image
     def scan_priority(f):
         name = f["name"].lower()
-        for i, kw in enumerate(["laudo", "certid", "nascimento", "rg", "cpf", "identif", "sus", "autodecl", "cadunico", "relatorio", "parecer", "receita", "encaminhamento", "grupo_familiar", "comprometimento"]):
+        # Prioridade: docs de identidade PRIMEIRO (CPF essencial pro protocolo)
+        for i, kw in enumerate(["cpf", "rg", "identif", "procura", "laudo", "certid", "nascimento", "sus", "autodecl", "cadunico", "relatorio", "parecer", "receita", "encaminhamento", "grupo_familiar", "comprometimento"]):
             if kw in name:
                 return i
         return 99
@@ -1069,6 +1070,8 @@ def analisar_pasta():
 
 # Extraction prompt constant
 EXTRACTION_PROMPT = """
+PRIORIDADE MAXIMA: Extraia nome + CPF do requerente E do representante. Esses campos sao OBRIGATORIOS para protocolar.
+
 Com base em TODOS os documentos acima, extraia e retorne APENAS um JSON valido (sem markdown, sem ```), com esta estrutura exata:
 
 {
@@ -1098,7 +1101,9 @@ Com base em TODOS os documentos acima, extraia e retorne APENAS um JSON valido (
 }
 
 REGRAS:
-- Se um dado nao foi encontrado, deixe como string vazia ""
+- CPF do requerente e CPF do representante sao OBRIGATORIOS. Procure em TODOS os documentos: RG, CPF, procuracao, autodeclaracao, CadUnico. O CPF aparece no formato XXX.XXX.XXX-XX.
+- Se houver representante (mae/pai), o CPF dele(a) DEVE ser extraido. Procure especialmente em: procuracao, documento de identidade do responsavel, CadUnico.
+- Para demais dados: se nao encontrado, deixe como string vazia ""
 - Para familia, incluir TODOS os membros que aparecem nos documentos (CadUnico, certidoes, etc.)
 - Para gastos de saude (medicamentos, terapias, consultas), SEMPRE colocar observacao "Art. 20-B LOAS"
 - O valor dos gastos pode ficar vazio se nao encontrado nos documentos
@@ -1865,13 +1870,12 @@ UF_TRIBUNAL_MAP = {
     'RN': {'trf': 'TRF-5', 'sistema': 'pje', 'uf_tribunal': 'RN'},
     'PB': {'trf': 'TRF-5', 'sistema': 'pje', 'uf_tribunal': 'PB'},
     # TRF-6 (MG) - eProc with UF-specific sistema
-    'MG': {'trf': 'TRF-6', 'sistema': 'eproc_jfmg', 'uf_tribunal': 'MG'},
+    'MG': {'trf': 'TRF-6', 'sistema': 'pje', 'uf_tribunal': 'MG'},
 }
 
 def detect_uf_from_folder(pasta):
     """Detect client's UF from documents in organized folder.
     Reads comprovante de residencia or CadUnico via OCR."""
-    import re as _re
     files = sorted(os.listdir(pasta))
 
     # Priority: comprovante de residencia, then cadunico, then autodeclaracao
@@ -1887,7 +1891,7 @@ def detect_uf_from_folder(pasta):
                    'AC', 'AP', 'RR', 'ES', 'DF']
             # Pattern: city/UF, city-UF, city - UF, CEP XXXXX-XXX CITY UF
             for uf in ufs:
-                if _re.search(rf'(?:[-/]\s*{uf}\b|\b{uf}\s*[-/]|\b{uf}\s+\d{{5}}|\d{{5}}-?\d{{3}}\s+\w+\s+{uf}\b|\b{uf}\s*CEP)', text):
+                if re.search(rf'(?:[-/]\s*{uf}\b|\b{uf}\s*[-/]|\b{uf}\s+\d{{5}}|\d{{5}}-?\d{{3}}\s+\w+\s+{uf}\b|\b{uf}\s*CEP)', text):
                     return uf
             # Try state names
             state_map = {'SÃO PAULO': 'SP', 'SAO PAULO': 'SP', 'MINAS GERAIS': 'MG',
@@ -1912,7 +1916,6 @@ def detect_uf_from_folder(pasta):
 
 def detect_cidade_from_folder(pasta):
     """Detect client's city from address documents via OCR."""
-    import re as _re
     files = sorted(os.listdir(pasta))
     for f in files:
         fl = f.lower()
@@ -1926,13 +1929,13 @@ def detect_cidade_from_folder(pasta):
                    'AC', 'AP', 'RR', 'ES', 'DF']
             for uf in ufs:
                 # Match: "Cidade/UF" or "Cidade - UF" or "Cidade-UF"
-                m = _re.search(rf'([A-ZÀ-Ú][a-zà-ú]+(?:\s+[a-zà-ú]+)*(?:\s+[A-ZÀ-Ú][a-zà-ú]+)*)\s*[-/]\s*{uf}\b', text)
+                m = re.search(rf'([A-ZÀ-Ú][a-zà-ú]+(?:\s+[a-zà-ú]+)*(?:\s+[A-ZÀ-Ú][a-zà-ú]+)*)\s*[-/]\s*{uf}\b', text)
                 if m:
                     cidade = m.group(1).strip()
                     if len(cidade) > 2:
                         return cidade
             # Try CEP-based: "XXXXX-XXX Cidade UF"
-            m = _re.search(r'\d{5}-?\d{3}\s+([A-ZÀ-Ú][a-zà-ú]+(?:\s+[a-zà-ú]+)*(?:\s+[A-ZÀ-Ú][a-zà-ú]+)*)', text)
+            m = re.search(r'\d{5}-?\d{3}\s+([A-ZÀ-Ú][a-zà-ú]+(?:\s+[a-zà-ú]+)*(?:\s+[A-ZÀ-Ú][a-zà-ú]+)*)', text)
             if m:
                 return m.group(1).strip()
     return None
@@ -2573,7 +2576,6 @@ def resolve_folder_path(pasta):
 
 def _extract_client_data_from_folder(pasta):
     """Extract client name, CPF, address from ALL documents in folder via OCR (cached)."""
-    import re as _re
     data = {}
     data['nome'] = os.path.basename(pasta).split("_")[0].strip()
     files = sorted(os.listdir(pasta))
@@ -2587,11 +2589,11 @@ def _extract_client_data_from_folder(pasta):
             r'\b(\d{5})[-](\d{3})\b',
         ]
         for p in patterns:
-            m = _re.search(p, text)
+            m = re.search(p, text)
             if m:
-                digits = _re.sub(r'[^\d]', '', m.group(0))
+                digits = re.sub(r'[^\d]', '', m.group(0))
                 # Extract only last 8 digits (CEP)
-                cep_m = _re.search(r'(\d{8})', digits)
+                cep_m = re.search(r'(\d{8})', digits)
                 if cep_m:
                     cep = cep_m.group(1)
                     if cep != '00000000':
@@ -2617,11 +2619,11 @@ def _extract_client_data_from_folder(pasta):
 
         # CPF — prefer CPF near client name, skip CadUnico (has multiple CPFs)
         if not data.get('documento') and 'cadunico' not in f.lower() and 'cad' not in f.lower():
-            cpf_m = _re.search(r'(?:CPF|cpf)[:\s]*[n°]*\s*(\d{3}[.\s]?\d{3}[.\s]?\d{3}[-.\s]?\d{2})', text)
+            cpf_m = re.search(r'(?:CPF|cpf)[:\s]*[n°]*\s*(\d{3}[.\s]?\d{3}[.\s]?\d{3}[-.\s]?\d{2})', text)
             if not cpf_m:
-                cpf_m = _re.search(r'\b(\d{3}\.\d{3}\.\d{3}-\d{2})\b', text)
+                cpf_m = re.search(r'\b(\d{3}\.\d{3}\.\d{3}-\d{2})\b', text)
             if cpf_m:
-                cpf_clean = _re.sub(r'[^\d]', '', cpf_m.group(1))
+                cpf_clean = re.sub(r'[^\d]', '', cpf_m.group(1))
                 if len(cpf_clean) == 11:
                     data['documento'] = f"{cpf_clean[:3]}.{cpf_clean[3:6]}.{cpf_clean[6:9]}-{cpf_clean[9:]}"
                     print(f"  [EXTRACT] CPF em {f}: {data['documento']}")
@@ -2636,7 +2638,7 @@ def _extract_client_data_from_folder(pasta):
         # Cidade/UF
         if not data.get('endereco_cidade'):
             for uf in ['SP','RJ','MG','PR','SC','RS','GO','MT','MS','BA','PE','CE','PA','AM','MA','PI','RN','PB','SE','AL','TO','RO','AC','AP','RR','ES','DF']:
-                m = _re.search(rf'([A-ZÀ-Úa-zà-ú]{{3,}}(?:\s+[A-Za-zÀ-ú]+)*)\s*[-/]\s*{uf}\b', text)
+                m = re.search(rf'([A-ZÀ-Úa-zà-ú]{{3,}}(?:\s+[A-Za-zÀ-ú]+)*)\s*[-/]\s*{uf}\b', text)
                 if m:
                     cidade = m.group(1).strip()
                     # Filter out false positives
@@ -2649,13 +2651,13 @@ def _extract_client_data_from_folder(pasta):
 
         # Logradouro
         if not data.get('endereco_logradouro'):
-            m = _re.search(r'(?:Endere[çc]o|Rua|Av\.|Avenida|Travessa)[:\s]*([^\n,]{5,60})', text, _re.IGNORECASE)
+            m = re.search(r'(?:Endere[çc]o|Rua|Av\.|Avenida|Travessa)[:\s]*([^\n,]{5,60})', text, re.IGNORECASE)
             if m:
                 logr = m.group(1).strip()
-                num_m = _re.search(r'n[°º]?\s*(\d+)', logr, _re.IGNORECASE)
+                num_m = re.search(r'n[°º]?\s*(\d+)', logr, re.IGNORECASE)
                 if num_m:
                     data['endereco_numero'] = num_m.group(1)
-                data['endereco_logradouro'] = _re.sub(r'\s*n[°º]?\s*\d+', '', logr).strip()
+                data['endereco_logradouro'] = re.sub(r'\s*n[°º]?\s*\d+', '', logr).strip()
 
         # Stop early if we have everything
         if all(data.get(k) for k in ['documento', 'endereco_cep', 'endereco_cidade']):
@@ -5383,9 +5385,8 @@ def elevenlabs_tts(text):
         return None
     try:
         # Clean text: remove emojis, markdown bold, etc for cleaner speech
-        import re as _re_tts
-        clean = _re_tts.sub(r'[*_~`]', '', text)  # Remove markdown
-        clean = _re_tts.sub(r'[\U0001F300-\U0001F9FF\U00002702-\U000027B0\U0000FE00-\U0000FEFF]', '', clean)  # Remove emojis
+        clean = re.sub(r'[*_~`]', '', text)  # Remove markdown
+        clean = re.sub(r'[\U0001F300-\U0001F9FF\U00002702-\U000027B0\U0000FE00-\U0000FEFF]', '', clean)  # Remove emojis
         clean = clean.strip()
         if not clean or len(clean) < 5:
             return None

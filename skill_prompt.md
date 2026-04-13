@@ -342,8 +342,16 @@ Texto corrido com critérios e parâmetros do cálculo:
 Gerar **dois documentos .docx separados**, cada um com timbrado:
 
 ### Qualificação nos quesitos
-Os quesitos devem conter apenas uma **qualificação resumida** do autor no início, antes das seções de perguntas:
-> "Autor(a): [NOME COMPLETO], [idade] anos, CPF nº [CPF], representado por [NOME DO REPRESENTANTE] ([parentesco]). NB nº [NB]. CID-10: [CIDs]."
+Os quesitos devem conter apenas uma **qualificação resumida** do autor no início, antes das seções de perguntas.
+Use SEMPRE o gênero correto — NUNCA use "autor(a)", "do(a)", "representado(a)":
+- Se o beneficiário é HOMEM/MENINO: "Autor", "representado por", "do autor"
+- Se o beneficiário é MULHER/MENINA: "Autora", "representada por", "da autora"
+
+Formato:
+> "Autora: MANUELLY CRISTINA, 8 anos, CPF nº 123.456.789-00, representada por MARCIA CRISTINA (genitora). NB nº 726.167.845-8. CID-10: F84.0."
+> "Autor: PEDRO LUCAS, 5 anos, CPF nº 987.654.321-00, representado por LUCIENE DANTAS (genitora). NB nº 123.456.789-0. CID-10: G80.0."
+
+REGRA: O texto dos quesitos também deve usar o gênero correto em TODAS as perguntas. Ex: "da autora" (não "do(a) autor(a)"), "a requerente" (não "o(a) requerente").
 
 NÃO incluir qualificação completa com endereço, RG, nacionalidade etc. nos quesitos — isso já consta na petição.
 
@@ -370,6 +378,13 @@ NÃO incluir qualificação completa com endereço, RG, nacionalidade etc. nos q
 - Texto em preto, corrido, justificado
 - Recuo de 360 twips
 - Espaçamento after 160 (para respirar entre quesitos)
+- Nome do autor/autora: SEMPRE em **negrito** em TODAS as ocorrências nos quesitos
+- Nome do representante: SEMPRE em **negrito** em TODAS as ocorrências nos quesitos
+
+### REGRA CRÍTICA: NÃO MISTURAR DADOS
+- Os quesitos devem conter APENAS dados do cliente atual. NUNCA usar nomes, CPFs ou dados de outros clientes.
+- Se o prompt menciona apenas 1 cliente, use SOMENTE os dados desse cliente.
+- NUNCA inventar nomes de familiares que não foram informados. Se não tem dado, deixe genérico ("genitora", "responsável").
 
 ---
 
