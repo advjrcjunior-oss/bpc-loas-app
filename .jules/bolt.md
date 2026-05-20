@@ -1,0 +1,3 @@
+## 2024-05-20 - LegalMailService attachment types cache
+**Learning:** Found a specific performance bottleneck during document uploads where `upload_todos_anexos` was calling `get_tipos_anexo` for every single file. Because the service has a hardcoded `RATE_LIMIT_DELAY` of 4 seconds between requests, uploading 10 files meant waiting 40 seconds just to fetch the exact same attachment types repeatedly.
+**Action:** Added an instance-level dictionary cache per `idpet` (`_tipos_anexo_cache`) to store successful responses. Next time, always check for repeated API calls inside loops, especially when the HTTP client enforces a strict rate-limit delay.

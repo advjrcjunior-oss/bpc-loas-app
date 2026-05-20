@@ -282,6 +282,7 @@ class LegalMailService:
         self._inss_id = None
         self._last_request = 0
         self._options_cache = {}  # Cache tribunal lookups (specialties, districts, etc.)
+        self._tipos_anexo_cache = {}  # Cache attachment types per petition ID
         self._session_cookies = None  # For internal proporAcao/update endpoint
         self._http = requests.Session()  # Reutiliza conexoes TCP (pool)
         if not self.api_key:
@@ -1000,9 +1001,14 @@ class LegalMailService:
 
     def get_tipos_anexo(self, idpet):
         """Get available attachment types for this petition."""
+        if idpet in self._tipos_anexo_cache:
+            return self._tipos_anexo_cache[idpet]
+
         r = self._request("get", f"/complaintsandpleadings/attachment/types?idpeticoes={idpet}")
         if r.status_code == 200:
-            return r.json()
+            tipos = r.json()
+            self._tipos_anexo_cache[idpet] = tipos
+            return tipos
         return []
 
     def resolver_tipo_anexo(self, idpet, prefix):
