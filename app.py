@@ -1495,22 +1495,38 @@ def merge_pdf_parts(pasta):
 
 
 def detect_duplicates(pasta):
-    """Detect duplicate files by content hash and move to subfolder."""
+    """Detect duplicate files by content hash and move to subfolder.
+    ⚡ Bolt: Optimized by pre-filtering files by size before hashing to avoid reading unique files."""
     import hashlib
 
     files = [f for f in os.listdir(pasta)
              if os.path.isfile(os.path.join(pasta, f)) and not f.startswith('.') and f != 'desktop.ini']
 
-    # Hash all files
-    hashes = {}
+    # Group by size to avoid hashing uniquely sized files
+    size_groups = {}
     for f in files:
         path = os.path.join(pasta, f)
         try:
-            with open(path, 'rb') as fh:
-                h = hashlib.md5(fh.read()).hexdigest()
-            hashes.setdefault(h, []).append(f)
+            size = os.path.getsize(path)
+            size_groups.setdefault(size, []).append(f)
         except Exception:
             pass
+
+    # Hash only files that share a size
+    hashes = {}
+    for size, fnames in size_groups.items():
+        if len(fnames) == 1:
+            hashes.setdefault(fnames[0] + "_unique", []).append(fnames[0])
+            continue
+
+        for f in fnames:
+            path = os.path.join(pasta, f)
+            try:
+                with open(path, 'rb') as fh:
+                    h = hashlib.md5(fh.read()).hexdigest()
+                hashes.setdefault(h, []).append(f)
+            except Exception:
+                pass
 
     # Find duplicates
     duplicates = []
