@@ -1,0 +1,3 @@
+## 2024-05-24 - Duplicate Detection Optimization
+**Learning:** Computing full MD5 hashes on all files indiscriminately, especially large PDFs and images, causes unnecessary CPU overhead and memory pressure. Pre-filtering by file size avoids reading unique files entirely. When a file must be read, doing so in chunks prevents loading the entire file into memory.
+**Action:** Before performing expensive operations like hashing or deep content inspection on files, group them by easily obtainable metadata (like file size) first. For files that pass the pre-filter, always read them in chunks (e.g. 64KB) to maintain low memory overhead.
