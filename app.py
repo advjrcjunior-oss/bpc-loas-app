@@ -1506,8 +1506,13 @@ def detect_duplicates(pasta):
     for f in files:
         path = os.path.join(pasta, f)
         try:
+            # ⚡ Bolt: Use chunked reading (8KB blocks) for file hashing
+            # Reduces memory usage drastically for large PDFs/images during batch processing
+            h_obj = hashlib.md5()
             with open(path, 'rb') as fh:
-                h = hashlib.md5(fh.read()).hexdigest()
+                for chunk in iter(lambda: fh.read(8192), b""):
+                    h_obj.update(chunk)
+            h = h_obj.hexdigest()
             hashes.setdefault(h, []).append(f)
         except Exception:
             pass
