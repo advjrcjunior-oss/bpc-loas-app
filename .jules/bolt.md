@@ -1,0 +1,3 @@
+## 2024-05-29 - Optimize Duplicate Detection Memory Usage and I/O
+**Learning:** In this codebase, batch processing workflows handle large PDF and image files. The `detect_duplicates` function previously loaded entire files into memory (`fh.read()`) for every file processed, even unique ones. This leads to severe memory exhaustion and redundant I/O.
+**Action:** Always pre-filter files by size (`os.path.getsize`) before applying hash operations. Only compute hashes for files with identical sizes. Furthermore, always read large files in chunks (e.g., `8192` bytes) instead of loading the entire content into memory at once.
