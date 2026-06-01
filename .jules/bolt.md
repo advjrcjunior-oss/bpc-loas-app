@@ -1,0 +1,3 @@
+## 2025-05-18 - Rate Limits and Hidden N+1
+**Learning:** Functions that look fast in isolation can become massive bottlenecks when combined with strict API rate limits (e.g., LegalMail's 4-second delay per request). `resolver_tipo_anexo` was fetching attachment types for *every single PDF* in a client's folder, multiplying the 4s delay and blocking the thread for minutes per client.
+**Action:** Always consider the surrounding API rate limits when auditing loops. Cache API lookups (`_options_cache`) aggressively, especially when resolving metadata during batch processing operations like document uploads.
