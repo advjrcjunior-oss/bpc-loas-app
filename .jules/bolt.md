@@ -1,0 +1,3 @@
+## 2024-06-02 - N+1 Rate Limit Bottleneck in Batch Uploads
+**Learning:** The LegalMail API has a strict 4-second minimum delay between requests (30 req/min limit). During batch document uploads (`upload_todos_anexos`), the system queries attachment types for every single file via `get_tipos_anexo` -> `resolver_tipo_anexo`. For a typical client folder with 15+ documents, this causes over a minute of unnecessary waiting just for attachment type lookups.
+**Action:** Aggressively cache API lookups that don't change frequently during a single operation (like attachment types for a specific petition) using instance-level caches (like `_options_cache`). Always inspect loops and batch operations for repeated API calls when a strict rate limit is in place.
