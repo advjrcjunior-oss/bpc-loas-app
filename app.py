@@ -1501,16 +1501,36 @@ def detect_duplicates(pasta):
     files = [f for f in os.listdir(pasta)
              if os.path.isfile(os.path.join(pasta, f)) and not f.startswith('.') and f != 'desktop.ini']
 
-    # Hash all files
-    hashes = {}
+    # Pre-filter by file size (optimization to avoid hashing everything)
+    size_groups = {}
     for f in files:
         path = os.path.join(pasta, f)
         try:
-            with open(path, 'rb') as fh:
-                h = hashlib.md5(fh.read()).hexdigest()
-            hashes.setdefault(h, []).append(f)
+            size = os.path.getsize(path)
+            size_groups.setdefault(size, []).append(f)
         except Exception:
             pass
+
+    # Hash files only if there are multiple files of the same size
+    hashes = {}
+    for size, fnames in size_groups.items():
+        if len(fnames) == 1:
+            # Only one file of this size, can't be a duplicate
+            hashes[f"unique_{fnames[0]}"] = fnames
+            continue
+
+        for f in fnames:
+            path = os.path.join(pasta, f)
+            try:
+                md5_hash = hashlib.md5()
+                with open(path, 'rb') as fh:
+                    # Read in 64KB chunks to avoid memory spikes with large PDFs/images
+                    for chunk in iter(lambda: fh.read(65536), b""):
+                        md5_hash.update(chunk)
+                h = md5_hash.hexdigest()
+                hashes.setdefault(h, []).append(f)
+            except Exception:
+                pass
 
     # Find duplicates
     duplicates = []
