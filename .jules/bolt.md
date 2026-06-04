@@ -1,0 +1,3 @@
+## 2026-06-04 - Caching LegalMail attachment types
+**Learning:** The external LegalMail API enforces a strict rate limit, creating an artificial delay (4 seconds) via `RATE_LIMIT_DELAY` for each request. During batch document uploads (`upload_todos_anexos`), the `get_tipos_anexo` method was making a live GET request for the attachment types per document, resulting in a severe N+1 bottleneck.
+**Action:** Use the existing `_options_cache` (via `self._get_options`) to cache API responses that are identical across requests for the same petition (`idpet`). Always aggressively cache read-only reference data when dealing with the LegalMail API to avoid rate limit delays.
