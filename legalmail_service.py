@@ -999,11 +999,12 @@ class LegalMailService:
         return False
 
     def get_tipos_anexo(self, idpet):
-        """Get available attachment types for this petition."""
-        r = self._request("get", f"/complaintsandpleadings/attachment/types?idpeticoes={idpet}")
-        if r.status_code == 200:
-            return r.json()
-        return []
+        """Get available attachment types for this petition.
+
+        ⚡ Bolt: Cached to prevent N+1 API requests during multi-file uploads
+        where 4s rate limits caused extreme delays per document.
+        """
+        return self._get_options("/complaintsandpleadings/attachment/types", idpet)
 
     def resolver_tipo_anexo(self, idpet, prefix):
         """Match file prefix to attachment type ID."""
