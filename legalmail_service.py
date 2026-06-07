@@ -1000,9 +1000,17 @@ class LegalMailService:
 
     def get_tipos_anexo(self, idpet):
         """Get available attachment types for this petition."""
+        # ⚡ Bolt: Cache attachment types per petition to avoid N+1 API calls during batch upload.
+        # Saves ~4s per attachment uploaded due to strict rate limits.
+        cache_key = f"tipos_anexo:{idpet}"
+        if cache_key in self._options_cache:
+            return self._options_cache[cache_key]
+
         r = self._request("get", f"/complaintsandpleadings/attachment/types?idpeticoes={idpet}")
         if r.status_code == 200:
-            return r.json()
+            tipos = r.json()
+            self._options_cache[cache_key] = tipos
+            return tipos
         return []
 
     def resolver_tipo_anexo(self, idpet, prefix):
