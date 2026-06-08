@@ -1,0 +1,3 @@
+## 2025-02-09 - N+1 Duplicate Network Requests for External APIs
+**Learning:** Functions querying external REST endpoints (like ViaCEP for validation) can be called repeatedly with the exact same payload/parameter during batch data processing. This creates a severe N+1 bottleneck, with the network latency of creating new HTTPS connections over and over dominating the application's runtime.
+**Action:** Use `requests.Session()` to enable connection pooling (TCP keep-alive), and apply `@functools.lru_cache` to aggressively cache identical lookup operations and eliminate redundant external requests, leading to a massive speedup (e.g. 3-4x latency reduction).

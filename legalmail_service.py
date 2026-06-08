@@ -20,7 +20,7 @@ API Endpoints (correct per OpenAPI spec 2026-03):
     POST /parts                             — Criar parte (legacy, funciona)
     GET /api/v1/party/professions           — Profissões válidas
 """
-import os, json, time, re, math, requests, unicodedata
+import os, json, time, re, math, requests, unicodedata, functools
 from datetime import datetime as _datetime
 try:
     import openpyxl
@@ -220,13 +220,17 @@ def ordenar_documentos(arquivos):
 # ============================================================
 # VIACEP SERVICE
 # ============================================================
+_viacep_session = requests.Session()
+
+@functools.lru_cache(maxsize=1024)
 def validar_cep(cep):
-    """Validate CEP via ViaCEP. Returns address dict or None."""
+    """Validate CEP via ViaCEP. Returns address dict or None. Cached for performance."""
     clean = re.sub(r'\D', '', str(cep))
     if len(clean) != 8:
         return None
     try:
-        r = requests.get(f"{VIACEP_BASE}/{clean}/json/", timeout=10)
+        # Bolt: using session pooling for keep-alive and lru_cache to prevent N+1 duplicate network calls
+        r = _viacep_session.get(f"{VIACEP_BASE}/{clean}/json/", timeout=10)
         if r.status_code == 200:
             data = r.json()
             if not data.get('erro'):
