@@ -17,6 +17,8 @@ CONVERSAPP_CHANNEL_ID = os.environ.get("CONVERSAPP_CHANNEL_ID", "5395dbba-34f9-4
 # Cache de nomes de atendentes
 _agent_names_cache = {}
 
+_http_session = requests.Session()
+
 
 def _conversapp_get(endpoint, params=None):
     """GET request to ConversApp API."""
@@ -25,7 +27,7 @@ def _conversapp_get(endpoint, params=None):
         "Authorization": f"Bearer {CONVERSAPP_API_TOKEN}",
         "Content-Type": "application/json",
     }
-    resp = requests.get(url, headers=headers, params=params, timeout=30)
+    resp = _http_session.get(url, headers=headers, params=params, timeout=30)
     return resp
 
 
