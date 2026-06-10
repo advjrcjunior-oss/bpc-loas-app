@@ -1,0 +1,3 @@
+## 2024-06-11 - Connection Pooling and Caching for External APIs
+**Learning:** External API dependencies like ViaCEP and cpfcnpj.com.br are major sources of latency during batch processing, as initializing new TCP connections for each lookup adds overhead. While memoization helps for duplicated queries, applying `lru_cache` indiscriminately is dangerous (e.g. if returning dictionaries that are mutated downstream like in `cpfcnpj_service.py`).
+**Action:** Always prefer `requests.Session()` to enable HTTP Keep-Alive (TCP connection reuse) for external integrations. Use `@functools.lru_cache` selectively and ensure the underlying return types are not modified by caller logic.
