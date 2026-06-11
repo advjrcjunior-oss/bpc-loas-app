@@ -20,7 +20,7 @@ API Endpoints (correct per OpenAPI spec 2026-03):
     POST /parts                             — Criar parte (legacy, funciona)
     GET /api/v1/party/professions           — Profissões válidas
 """
-import os, json, time, re, math, requests, unicodedata
+import os, json, time, re, math, requests, unicodedata, functools
 from datetime import datetime as _datetime
 try:
     import openpyxl
@@ -220,13 +220,16 @@ def ordenar_documentos(arquivos):
 # ============================================================
 # VIACEP SERVICE
 # ============================================================
-def validar_cep(cep):
-    """Validate CEP via ViaCEP. Returns address dict or None."""
-    clean = re.sub(r'\D', '', str(cep))
-    if len(clean) != 8:
-        return None
+# ⚡ Bolt Optimization: Connection pool and LRU cache for ViaCEP
+# Reusing the connection and caching results prevents N+1 bottlenecks
+# when multiple clients from the same zip code are processed in batch.
+_viacep_session = requests.Session()
+
+@functools.lru_cache(maxsize=1024)
+def _fetch_viacep_cached(clean_cep):
+    """Internal cached helper to fetch ViaCEP data using clean 8-digit CEP."""
     try:
-        r = requests.get(f"{VIACEP_BASE}/{clean}/json/", timeout=10)
+        r = _viacep_session.get(f"{VIACEP_BASE}/{clean_cep}/json/", timeout=10)
         if r.status_code == 200:
             data = r.json()
             if not data.get('erro'):
@@ -235,13 +238,27 @@ def validar_cep(cep):
         pass
     return None
 
+def validar_cep(cep):
+    """Validate CEP via ViaCEP. Returns address dict or None."""
+    clean = re.sub(r'\D', '', str(cep))
+    if len(clean) != 8:
+        return None
+
+    data = _fetch_viacep_cached(clean)
+
+    # Return a copy to prevent accidental mutation of the cached dictionary
+    # by downstream consumers which would cause cross-request bugs.
+    if data:
+        return dict(data)
+    return None
+
 
 def buscar_cep_por_endereco(uf, cidade, logradouro):
     """Search CEP by address via ViaCEP. Returns CEP string or None."""
     try:
         rua = re.sub(r'\s+', '+', logradouro.strip()[:40])
         url = f"{VIACEP_BASE}/{uf}/{cidade}/{rua}/json/"
-        r = requests.get(url, timeout=10)
+        r = _viacep_session.get(url, timeout=10)
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, list) and len(data) > 0:
