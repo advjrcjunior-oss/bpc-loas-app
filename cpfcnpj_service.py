@@ -10,6 +10,10 @@ import requests
 CPFCNPJ_TOKEN = os.environ.get("CPFCNPJ_TOKEN", "")
 BASE_URL = "https://api.cpfcnpj.com.br"
 
+# Sessao HTTP global para reaproveitamento de conexoes (pool TCP).
+# Isso reduz o overhead de recriar conexoes em operacoes em lote (batch).
+_session = requests.Session()
+
 
 def limpar_cpf(cpf: str) -> str:
     return re.sub(r"\D", "", cpf)
@@ -31,7 +35,7 @@ def consultar_cpf(cpf: str) -> dict:
 
     # Pacote F: dados completos (nome, nascimento, endereco, telefone)
     url = f"{BASE_URL}/{token}/6/json/{cpf_limpo}"
-    resp = requests.get(url, timeout=15)
+    resp = _session.get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
 
@@ -69,7 +73,7 @@ def consultar_cnpj(cnpj: str) -> dict:
         raise ValueError("CPFCNPJ_TOKEN nao configurado no .env")
 
     url = f"{BASE_URL}/{token}/6/json/{cnpj_limpo}"
-    resp = requests.get(url, timeout=15)
+    resp = _session.get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
 
