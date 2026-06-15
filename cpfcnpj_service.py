@@ -7,6 +7,12 @@ import os
 import re
 import requests
 
+# Optimization: Use a global Session to reuse TCP connections (connection pooling).
+# This prevents severe latency bottlenecks (N+1 connection handshakes) during batch operations.
+# Note: We do not use @functools.lru_cache here because the returned dictionary
+# is mutated by downstream functions (e.g. validar_dados_cliente), causing cache corruption.
+_session = requests.Session()
+
 CPFCNPJ_TOKEN = os.environ.get("CPFCNPJ_TOKEN", "")
 BASE_URL = "https://api.cpfcnpj.com.br"
 
@@ -31,7 +37,7 @@ def consultar_cpf(cpf: str) -> dict:
 
     # Pacote F: dados completos (nome, nascimento, endereco, telefone)
     url = f"{BASE_URL}/{token}/6/json/{cpf_limpo}"
-    resp = requests.get(url, timeout=15)
+    resp = _session.get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
 
@@ -69,7 +75,7 @@ def consultar_cnpj(cnpj: str) -> dict:
         raise ValueError("CPFCNPJ_TOKEN nao configurado no .env")
 
     url = f"{BASE_URL}/{token}/6/json/{cnpj_limpo}"
-    resp = requests.get(url, timeout=15)
+    resp = _session.get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
 
