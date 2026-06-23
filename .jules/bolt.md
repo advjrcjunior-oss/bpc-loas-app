@@ -1,0 +1,3 @@
+## 2024-06-25 - Avoid `@functools.lru_cache` on Dictionary-Returning API Functions
+**Learning:** In `cpfcnpj_service.py`, using `@functools.lru_cache` on `consultar_cpf` or `consultar_cnpj` causes cache corruption because downstream consumers (like `validar_dados_cliente`) mutate the returned dictionary (e.g., adding a `'validacao'` key). When cached, subsequent calls receive the mutated dictionary, leading to unexpected behavior.
+**Action:** Do not use `lru_cache` for API functions that return mutable structures that are mutated downstream. Instead, use `requests.Session()` to establish connection pooling (TCP keep-alive), which provides significant network performance benefits during batch processing workflows without risking state corruption.
