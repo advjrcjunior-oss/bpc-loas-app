@@ -39,6 +39,9 @@ LEGALMAIL_BASE = f"{LEGALMAIL_SITE}/api/v1"
 VIACEP_BASE = "https://viacep.com.br/ws"
 RATE_LIMIT_DELAY = float(os.environ.get('LEGALMAIL_RATE_DELAY', '4.0'))  # Fix #17: 4s minimum between requests (30 req/min limit)
 
+# ⚡ Bolt: Use Session for connection pooling (TCP keep-alive) for external ViaCEP calls
+_viacep_session = requests.Session()
+
 # UF → TRF mapping (complete, verified against CNJ)
 UF_TRIBUNAL_MAP = {
     'DF': {'trf': 'TRF-1', 'sistema': 'pje', 'uf_tribunal': 'DF'},
@@ -226,7 +229,7 @@ def validar_cep(cep):
     if len(clean) != 8:
         return None
     try:
-        r = requests.get(f"{VIACEP_BASE}/{clean}/json/", timeout=10)
+        r = _viacep_session.get(f"{VIACEP_BASE}/{clean}/json/", timeout=10)
         if r.status_code == 200:
             data = r.json()
             if not data.get('erro'):
@@ -241,7 +244,7 @@ def buscar_cep_por_endereco(uf, cidade, logradouro):
     try:
         rua = re.sub(r'\s+', '+', logradouro.strip()[:40])
         url = f"{VIACEP_BASE}/{uf}/{cidade}/{rua}/json/"
-        r = requests.get(url, timeout=10)
+        r = _viacep_session.get(url, timeout=10)
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, list) and len(data) > 0:
