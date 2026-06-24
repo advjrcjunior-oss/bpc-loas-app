@@ -1,0 +1,3 @@
+## 2024-05-24 - Connection Pooling for External APIs
+**Learning:** During batch processing workflows, repeatedly calling external REST APIs (e.g., ViaCEP, cpfcnpj) using `requests.get()` without connection pooling causes significant latency overhead due to repeated TCP/TLS handshakes.
+**Action:** Utilize a global `requests.Session()` instance for external API modules to maintain connection pooling (TCP keep-alive), improving overall batch processing speed.
