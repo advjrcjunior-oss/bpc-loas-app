@@ -1,0 +1,3 @@
+## 2024-06-18 - Connection Pooling for External REST APIs
+**Learning:** Using `@functools.lru_cache` directly on API functions that return dictionaries and catch exceptions (e.g., `validar_cep`, `consultar_cpf`) leads to permanently caching transient network failures or cache corruption when dictionaries are mutated downstream (e.g. `validar_dados_cliente`). Connection pooling provides a robust performance boost without cache invalidation risks.
+**Action:** When interacting with external REST APIs (e.g., ViaCEP, cpfcnpj) during batch processing workflows, utilize a module-level `requests.Session()` for connection pooling (TCP keep-alive). Avoid using `@functools.lru_cache` on these API functions.

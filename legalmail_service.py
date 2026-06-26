@@ -21,6 +21,9 @@ API Endpoints (correct per OpenAPI spec 2026-03):
     GET /api/v1/party/professions           — Profissões válidas
 """
 import os, json, time, re, math, requests, unicodedata
+
+_viacep_session = requests.Session()
+
 from datetime import datetime as _datetime
 try:
     import openpyxl
@@ -226,7 +229,7 @@ def validar_cep(cep):
     if len(clean) != 8:
         return None
     try:
-        r = requests.get(f"{VIACEP_BASE}/{clean}/json/", timeout=10)
+        r = _viacep_session.get(f"{VIACEP_BASE}/{clean}/json/", timeout=10)
         if r.status_code == 200:
             data = r.json()
             if not data.get('erro'):
@@ -241,7 +244,7 @@ def buscar_cep_por_endereco(uf, cidade, logradouro):
     try:
         rua = re.sub(r'\s+', '+', logradouro.strip()[:40])
         url = f"{VIACEP_BASE}/{uf}/{cidade}/{rua}/json/"
-        r = requests.get(url, timeout=10)
+        r = _viacep_session.get(url, timeout=10)
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, list) and len(data) > 0:
