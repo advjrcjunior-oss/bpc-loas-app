@@ -1,0 +1,3 @@
+## 2024-06-27 - Using requests.Session() instead of lru_cache for API calls returning mutable data
+**Learning:** Do not use `@functools.lru_cache` directly on API functions like `consultar_cpf` or `consultar_cnpj` because the returned dictionaries are mutated by downstream functions (e.g., `validar_dados_cliente`). This causes cache corruption where subsequent requests get the already mutated data.
+**Action:** Rely on a global `requests.Session()` object for connection pooling instead of caching function results. This avoids caching mutable objects while still achieving significant speedup in batch operations via connection reuse.
