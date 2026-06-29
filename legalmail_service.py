@@ -220,13 +220,18 @@ def ordenar_documentos(arquivos):
 # ============================================================
 # VIACEP SERVICE
 # ============================================================
+
+# ⚡ Bolt: Use connection pooling for ViaCEP API to reuse TCP connections.
+# Impact: Reduces latency by skipping TCP/TLS handshake on repeated batch calls.
+_viacep_session = requests.Session()
+
 def validar_cep(cep):
     """Validate CEP via ViaCEP. Returns address dict or None."""
     clean = re.sub(r'\D', '', str(cep))
     if len(clean) != 8:
         return None
     try:
-        r = requests.get(f"{VIACEP_BASE}/{clean}/json/", timeout=10)
+        r = _viacep_session.get(f"{VIACEP_BASE}/{clean}/json/", timeout=10)
         if r.status_code == 200:
             data = r.json()
             if not data.get('erro'):
@@ -241,7 +246,7 @@ def buscar_cep_por_endereco(uf, cidade, logradouro):
     try:
         rua = re.sub(r'\s+', '+', logradouro.strip()[:40])
         url = f"{VIACEP_BASE}/{uf}/{cidade}/{rua}/json/"
-        r = requests.get(url, timeout=10)
+        r = _viacep_session.get(url, timeout=10)
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, list) and len(data) > 0:
@@ -319,7 +324,7 @@ class LegalMailService:
             print(f"    [RATE LIMIT] Aguardando {wait}s... (tentativa {retry+2}/3)")
             time.sleep(wait)
             self._last_request = time.time()
-            r = getattr(requests, method)(url, **kwargs)
+            r = getattr(self._http, method)(url, **kwargs)
 
         return r
 
@@ -431,7 +436,7 @@ class LegalMailService:
                 vc = math.ceil(vc)  # Arredondar PRA CIMA (nunca pedir menos que o devido)
             form['valorCausa_proporAcao'] = str(int(vc))
 
-        r = requests.post(f'{LEGALMAIL_SITE}/api/proporAcao/update',
+        r = self._http.post(f'{LEGALMAIL_SITE}/api/proporAcao/update',
                          data=form, cookies=cookies, timeout=15)
         try:
             resp_ok = r.status_code == 200 and r.json().get('status') == 'success'
@@ -512,7 +517,7 @@ class LegalMailService:
         if not cookies:
             return []
         try:
-            r = requests.get(f'{LEGALMAIL_SITE}/api/{endpoint}',
+            r = self._http.get(f'{LEGALMAIL_SITE}/api/{endpoint}',
                            params=params, cookies=cookies, timeout=15)
             if r.status_code == 200:
                 data = r.json()
@@ -684,7 +689,7 @@ class LegalMailService:
             if dados.get('valorCausa') and dados['valorCausa'] > 0:
                 form['valorCausa_proporAcao'] = str(int(math.ceil(dados['valorCausa'])))
 
-            r = requests.post(f'{LEGALMAIL_SITE}/api/proporAcao/update',
+            r = self._http.post(f'{LEGALMAIL_SITE}/api/proporAcao/update',
                              data=form, cookies=cookies, timeout=15)
             try:
                 resp_ok = r.status_code == 200 and r.json().get('status') == 'success'
