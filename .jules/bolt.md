@@ -1,0 +1,3 @@
+## 2024-07-01 - External API Connection Pooling and Caching
+**Learning:** In batch processing workflows, using `requests.get()` directly for external API calls (like cpfcnpj.com.br) causes severe overhead due to repeated TCP/TLS handshakes. Also, caching these API responses with `@functools.lru_cache` is dangerous if the returned dictionaries are mutated downstream, causing cache corruption.
+**Action:** Use `requests.Session()` globally in service modules for connection pooling instead of direct `requests.get()`, and avoid direct dictionary caching if mutations occur downstream.
