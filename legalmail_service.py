@@ -220,13 +220,17 @@ def ordenar_documentos(arquivos):
 # ============================================================
 # VIACEP SERVICE
 # ============================================================
+# ⚡ Bolt: Session created for TCP connection pooling across ViaCEP queries
+# Impact: Eliminates redundant TCP/TLS handshakes, speeding up batch CEP lookups
+_viacep_session = requests.Session()
+
 def validar_cep(cep):
     """Validate CEP via ViaCEP. Returns address dict or None."""
     clean = re.sub(r'\D', '', str(cep))
     if len(clean) != 8:
         return None
     try:
-        r = requests.get(f"{VIACEP_BASE}/{clean}/json/", timeout=10)
+        r = _viacep_session.get(f"{VIACEP_BASE}/{clean}/json/", timeout=10)
         if r.status_code == 200:
             data = r.json()
             if not data.get('erro'):
@@ -241,7 +245,7 @@ def buscar_cep_por_endereco(uf, cidade, logradouro):
     try:
         rua = re.sub(r'\s+', '+', logradouro.strip()[:40])
         url = f"{VIACEP_BASE}/{uf}/{cidade}/{rua}/json/"
-        r = requests.get(url, timeout=10)
+        r = _viacep_session.get(url, timeout=10)
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, list) and len(data) > 0:
@@ -512,7 +516,9 @@ class LegalMailService:
         if not cookies:
             return []
         try:
-            r = requests.get(f'{LEGALMAIL_SITE}/api/{endpoint}',
+            # ⚡ Bolt: Reuse the LegalMailService session (self._http) instead of requests.get()
+            # Impact: Leverages existing connection pooling for internal search requests
+            r = self._http.get(f'{LEGALMAIL_SITE}/api/{endpoint}',
                            params=params, cookies=cookies, timeout=15)
             if r.status_code == 200:
                 data = r.json()
