@@ -7,6 +7,10 @@ import os
 import re
 import requests
 
+# ⚡ Bolt Performance: Use Session for connection pooling (TCP keep-alive)
+# This reduces severe network overhead caused by establishing new connections for every API call.
+_session = requests.Session()
+
 CPFCNPJ_TOKEN = os.environ.get("CPFCNPJ_TOKEN", "")
 BASE_URL = "https://api.cpfcnpj.com.br"
 
@@ -31,7 +35,7 @@ def consultar_cpf(cpf: str) -> dict:
 
     # Pacote F: dados completos (nome, nascimento, endereco, telefone)
     url = f"{BASE_URL}/{token}/6/json/{cpf_limpo}"
-    resp = requests.get(url, timeout=15)
+    resp = _session.get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
 
@@ -69,7 +73,7 @@ def consultar_cnpj(cnpj: str) -> dict:
         raise ValueError("CPFCNPJ_TOKEN nao configurado no .env")
 
     url = f"{BASE_URL}/{token}/6/json/{cnpj_limpo}"
-    resp = requests.get(url, timeout=15)
+    resp = _session.get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
 
