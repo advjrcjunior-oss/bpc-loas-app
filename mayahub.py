@@ -13,6 +13,9 @@ MAYAHUB_API_KEY = os.environ.get("MAYAHUB_API_KEY", "")
 MAYAHUB_BASE = "https://app.mayahub.ai/api/user"
 MAYAHUB_ASSISTANT_ID = os.environ.get("MAYAHUB_ASSISTANT_ID", "")
 
+# Usar Session para connection pooling
+_session = requests.Session()
+
 
 def _mayahub_request(method, endpoint, **kwargs):
     """Make authenticated request to MayaHub API."""
@@ -20,7 +23,7 @@ def _mayahub_request(method, endpoint, **kwargs):
     headers = kwargs.pop("headers", {})
     headers["Authorization"] = f"Bearer {MAYAHUB_API_KEY}"
     headers["Accept"] = "application/json"
-    return requests.request(method, url, headers=headers, timeout=30, **kwargs)
+    return _session.request(method, url, headers=headers, timeout=30, **kwargs)
 
 
 def _get_admin_check():
