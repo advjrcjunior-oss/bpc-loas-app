@@ -1,0 +1,3 @@
+## 2024-05-24 - Avoiding lru_cache on mutating API responses and connection pooling
+**Learning:** Do not use `@functools.lru_cache` directly on API wrapper functions (like `consultar_cpf` or `validar_cep`) if the returned dictionary is modified downstream by other functions (e.g., `validar_dados_cliente`). Mutating cached instances corrupts the cache. Additionally, caching failed lookups permanently avoids transient network failures resolving themselves.
+**Action:** Always rely on HTTP-level connection pooling using `requests.Session()` rather than method-level memoization for such external API calls to avoid repeated TCP/TLS handshakes while keeping data instances fresh and safely mutable.

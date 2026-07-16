@@ -220,13 +220,16 @@ def ordenar_documentos(arquivos):
 # ============================================================
 # VIACEP SERVICE
 # ============================================================
+# ⚡ Bolt: Using requests.Session() for connection pooling to avoid repeated TCP/TLS handshakes in batch processing.
+_viacep_session = requests.Session()
+
 def validar_cep(cep):
     """Validate CEP via ViaCEP. Returns address dict or None."""
     clean = re.sub(r'\D', '', str(cep))
     if len(clean) != 8:
         return None
     try:
-        r = requests.get(f"{VIACEP_BASE}/{clean}/json/", timeout=10)
+        r = _viacep_session.get(f"{VIACEP_BASE}/{clean}/json/", timeout=10)
         if r.status_code == 200:
             data = r.json()
             if not data.get('erro'):
@@ -241,7 +244,7 @@ def buscar_cep_por_endereco(uf, cidade, logradouro):
     try:
         rua = re.sub(r'\s+', '+', logradouro.strip()[:40])
         url = f"{VIACEP_BASE}/{uf}/{cidade}/{rua}/json/"
-        r = requests.get(url, timeout=10)
+        r = _viacep_session.get(url, timeout=10)
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, list) and len(data) > 0:
