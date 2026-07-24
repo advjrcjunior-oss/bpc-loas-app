@@ -10,6 +10,15 @@ import requests
 CPFCNPJ_TOKEN = os.environ.get("CPFCNPJ_TOKEN", "")
 BASE_URL = "https://api.cpfcnpj.com.br"
 
+_session = None
+
+def get_session():
+    """Lazy initialization of requests.Session for Gunicorn fork-safety."""
+    global _session
+    if _session is None:
+        _session = requests.Session()
+    return _session
+
 
 def limpar_cpf(cpf: str) -> str:
     return re.sub(r"\D", "", cpf)
@@ -31,7 +40,12 @@ def consultar_cpf(cpf: str) -> dict:
 
     # Pacote F: dados completos (nome, nascimento, endereco, telefone)
     url = f"{BASE_URL}/{token}/6/json/{cpf_limpo}"
-    resp = requests.get(url, timeout=15)
+    # ⚡ Bolt: Connection pooling for external API
+    # What: Replaced requests.get with get_session().get
+    # Why: Avoids repeated TLS handshakes during batch processing.
+    # Impact: Reduces latency by reusing TCP keep-alive connections.
+    # Measurement: Compare CPF batch processing time.
+    resp = get_session().get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
 
@@ -69,7 +83,12 @@ def consultar_cnpj(cnpj: str) -> dict:
         raise ValueError("CPFCNPJ_TOKEN nao configurado no .env")
 
     url = f"{BASE_URL}/{token}/6/json/{cnpj_limpo}"
-    resp = requests.get(url, timeout=15)
+    # ⚡ Bolt: Connection pooling for external API
+    # What: Replaced requests.get with get_session().get
+    # Why: Avoids repeated TLS handshakes during batch processing.
+    # Impact: Reduces latency by reusing TCP keep-alive connections.
+    # Measurement: Compare CNPJ batch processing time.
+    resp = get_session().get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
 
