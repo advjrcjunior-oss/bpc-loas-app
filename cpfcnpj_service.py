@@ -10,6 +10,24 @@ import requests
 CPFCNPJ_TOKEN = os.environ.get("CPFCNPJ_TOKEN", "")
 BASE_URL = "https://api.cpfcnpj.com.br"
 
+_session = None
+
+def get_session():
+    """
+    Returns a lazily initialized requests.Session for connection pooling.
+
+    [Bolt Performance ⚡]
+    What: Lazy initialization of requests.Session.
+    Why: Reuses TCP/TLS connections to api.cpfcnpj.com.br, improving batch processing speed.
+         Lazy init prevents fork-safety issues in Gunicorn, ensuring each worker gets its own session.
+    Impact: Eliminates SSL handshake overhead (~100-200ms) per request.
+    Measurement: Compare execution time of batch API requests.
+    """
+    global _session
+    if _session is None:
+        _session = requests.Session()
+    return _session
+
 
 def limpar_cpf(cpf: str) -> str:
     return re.sub(r"\D", "", cpf)
@@ -31,7 +49,7 @@ def consultar_cpf(cpf: str) -> dict:
 
     # Pacote F: dados completos (nome, nascimento, endereco, telefone)
     url = f"{BASE_URL}/{token}/6/json/{cpf_limpo}"
-    resp = requests.get(url, timeout=15)
+    resp = get_session().get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
 
@@ -69,7 +87,7 @@ def consultar_cnpj(cnpj: str) -> dict:
         raise ValueError("CPFCNPJ_TOKEN nao configurado no .env")
 
     url = f"{BASE_URL}/{token}/6/json/{cnpj_limpo}"
-    resp = requests.get(url, timeout=15)
+    resp = get_session().get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
 
