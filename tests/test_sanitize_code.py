@@ -84,8 +84,9 @@ class TestSanitizeCode:
         assert "from datetime import" not in out
 
     def test_removes_astral_plane_characters(self):
-        out = sanitize_code("x = 1  # 🎉")
-        assert "🎉" not in out
+        emoji = "\U0001f389"
+        out = sanitize_code(f"x = 1  # {emoji}")
+        assert emoji not in out
 
     def test_normalizes_smart_quotes(self):
         out = sanitize_code("x = ‘a’")
@@ -96,16 +97,15 @@ class TestSanitizeCode:
         out = sanitize_code("x = “a”")
         assert "“" not in out and "”" not in out
 
-    def test_normalizes_checkmarks_and_dashes(self):
-        out = sanitize_code("# ✓ • — …")
-        assert "✓" not in out
-        assert "•" not in out
-        assert "—" not in out
-        assert "…" not in out
-
-    def test_replaces_non_breaking_space(self):
-        out = sanitize_code("x  = 1")
-        assert " " not in out
+    @pytest.mark.parametrize(
+        "char,replacement",
+        [("✓", "v"), ("•", "-"), ("—", "-"), ("–", "-"),
+         ("…", "..."), (" ", " ")],
+    )
+    def test_normalizes_typographic_characters(self, char, replacement):
+        out = sanitize_code(f"x = 1  # {char}")
+        assert char not in out
+        assert replacement in out
 
     def test_empty_input(self):
         assert sanitize_code("") == ""
