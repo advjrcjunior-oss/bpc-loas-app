@@ -104,7 +104,7 @@ class TestSanitizeCode:
         assert "…" not in out
 
     def test_replaces_non_breaking_space(self):
-        out = sanitize_code("x = 1 ")
+        out = sanitize_code("x  = 1")
         assert " " not in out
 
     def test_empty_input(self):
