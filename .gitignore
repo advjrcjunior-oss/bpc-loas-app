@@ -13,3 +13,6 @@ test_analysis.py
 test_yasmin.py
 yasmin_movimentacoes.txt
 yasmin_peticao.txt
+.coverage
+htmlcov/
+.pytest_cache/

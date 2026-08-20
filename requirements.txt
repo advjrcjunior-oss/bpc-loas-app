@@ -11,3 +11,8 @@ psycopg2-binary==2.9.10
 google-auth==2.49.0
 google-auth-oauthlib==1.3.0
 google-api-python-client==2.192.0
+
+# Test-only
+pytest==9.1.1
+pytest-cov==7.1.0
+responses==0.26.2
